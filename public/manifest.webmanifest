@@ -1,0 +1,9 @@
+{
+  "name": "Brownie Picker",
+  "short_name": "Brownies",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#16110d",
+  "theme_color": "#16110d",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

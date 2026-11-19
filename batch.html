@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Brownie Picker – Batch</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+      body { margin: 0; padding: 16px; background: #16110d; color: #f6eee6; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p { color: #b8a898; margin: 0 0 16px; font-size: 14px; }
+      code { background: #33271f; padding: 1px 5px; border-radius: 4px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 16px; }
+      .card { background: #241b15; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+      .card h2 { font-size: 15px; margin: 0; word-break: break-all; }
+      .card canvas { width: 100%; height: auto; border-radius: 8px; display: block; touch-action: none; }
+      .imgs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+      .imgs figure { margin: 0; }
+      .imgs figcaption { font-size: 11px; color: #b8a898; }
+      .stats { font-size: 13px; line-height: 1.5; }
+      .stats .win { color: #ffc83d; font-weight: 700; }
+      .bad { color: #ff9d8a; }
+      .ok { color: #9be29b; }
+      .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+      button { background: #33271f; color: inherit; border: 0; border-radius: 8px; padding: 8px 12px; font: inherit; cursor: pointer; }
+      button.primary { background: #ffc83d; color: #1a1206; }
+      .editor { position: relative; }
+      .loupe { position: absolute; display: none; pointer-events: none; border-radius: 50%; }
+      table { border-collapse: collapse; font-size: 12px; }
+      td, th { padding: 2px 8px; text-align: right; border-bottom: 1px solid #ffffff14; }
+    </style>
+  </head>
+  <body>
+    <h1>🍫 Batch results: <code>test-images/</code></h1>
+    <p id="intro">
+      Runs the automatic pipeline on every image in <code>test-images/</code> (and <code>test-images/synthetic/</code>; make
+      those with <code>npm run synth</code>). Corners come from <code>NAME.corners.json</code> next to each photo, or from
+      auto-detection. Use “Edit corners” then “Save” to write the sidecar file.
+    </p>
+    <div id="grid" class="grid"></div>
+    <script type="module" src="/src/batch.ts"></script>
+  </body>
+</html>
