@@ -1,13 +1,12 @@
 import './style.css';
 import { detectBoard } from './pipeline/autocorners';
-import { obliqueness, orderCorners } from './pipeline/geometry';
-import { DEFAULT_PARAMS, type SegParams } from './pipeline/segment';
-import { DEFAULT_TAP, type TapOptions } from './pipeline/tapselect';
+import { Board, DEFAULT_SENSITIVITY, MAX_FORESHORTENING } from './pipeline/board';
+import { obliqueness, orderCorners, polygonArea } from './pipeline/geometry';
 import type { RGBAImage } from './pipeline/types';
+import { inRect } from './pipeline/warp';
 import { CornerEditor } from './ui/cornerEditor';
 import { loadOpenCV } from './ui/loadOpenCV';
-import { drawResult, grayToCanvas, imageToCanvas, labelsToCanvas, verdict } from './ui/render';
-import { BoardSession } from './ui/session';
+import { debugPanels, drawResult, facesOverlay, verdict } from './ui/render';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -30,15 +29,13 @@ const store = {
   },
 };
 
-let params: SegParams = store.get('bp.params', { ...DEFAULT_PARAMS });
-let tapOpts: TapOptions = store.get('bp.tap', { ...DEFAULT_TAP });
+let settings = store.get('bp.settings', { sensitivity: DEFAULT_SENSITIVITY });
 
 // ---------- app state ----------------------------------------------------------------------
 let photo: HTMLCanvasElement | null = null;
 let photoData: RGBAImage | null = null;
-let session: BoardSession | null = null;
+let board: Board | null = null;
 let editor: CornerEditor | null = null;
-let sampleMode = false;
 let cvReady = false;
 let stream: MediaStream | null = null;
 
@@ -140,7 +137,7 @@ function setPhoto(src: CanvasImageSource, w: number, h: number) {
   ctx.drawImage(src, 0, 0, c.width, c.height);
   photo = c;
   photoData = ctx.getImageData(0, 0, c.width, c.height);
-  session = null;
+  board = null;
   openCorners();
 }
 
@@ -165,7 +162,7 @@ $<HTMLInputElement>('file').addEventListener('change', async (e) => {
   }
 });
 
-// ---------- 2. corners -----------------------------------------------------------------------
+// ---------- 2. corners (mandatory: nothing is measured until the user confirms them) -----------
 function openCorners(keepCorners = false) {
   if (!photo) return;
   if (!editor) {
@@ -174,16 +171,17 @@ function openCorners(keepCorners = false) {
   } else editor.setPhoto(photo);
   if (!keepCorners) editor.setCorners([]);
   show('corners');
-  if (!keepCorners) cvPromise.then(() => autoCorners(true));
+  updateCornerUI();
 }
 
-function autoCorners(silent: boolean) {
+function autoCorners() {
   if (!cvReady || !photoData || !editor) return;
   const c = detectBoard(photoData);
-  if (c) {
+  // A "board" covering nearly the whole photo is just the photo border: useless, so refuse it.
+  if (c && polygonArea(c) < 0.85 * photoData.width * photoData.height) {
     editor.setCorners(c);
-    if (!silent) toast('Board found. Drag the corners to adjust.');
-  } else if (!silent) toast('Couldn’t find the board automatically. Tap its 4 corners.');
+    toast('Suggested corners: check them and drag to fix.');
+  } else toast('Couldn’t find the board. Tap its 4 corners.');
 }
 
 function updateCornerUI() {
@@ -192,29 +190,35 @@ function updateCornerUI() {
   hint.classList.remove('warn');
   $<HTMLButtonElement>('measure').disabled = n !== 4 || !cvReady;
   $<HTMLButtonElement>('auto-corners').disabled = !cvReady;
-  if (n < 4) hint.textContent = `Tap the 4 corners of the board (${n}/4)`;
-  else if (!cvReady) hint.textContent = 'Corners set. Waiting for the vision engine…';
+  if (n < 4) hint.textContent = `Tap the 4 corners of the board (${n}/4). Only what’s inside is measured.`;
+  else if (!cvReady) hint.textContent = 'Corners placed. Waiting for the vision engine…';
   else {
     const ob = obliqueness(orderCorners(editor!.corners));
-    if (ob > 1.6) {
-      hint.textContent = 'Very angled shot: brownie height will bias sizes. Shoot more from above if you can.';
+    if (ob > MAX_FORESHORTENING) {
+      hint.textContent = `Angle too shallow (near edge ${ob.toFixed(1)}× the far edge): sizes won’t be accurate. Retake from higher up.`;
       hint.classList.add('warn');
-    } else hint.textContent = 'Drag corners to adjust, then Measure';
+    } else if (ob > 1.6) {
+      hint.textContent = 'Quite angled: brownie height will bias sizes a little. Shoot more from above if you can.';
+      hint.classList.add('warn');
+    } else hint.textContent = 'Drag the corners onto the board’s corners, then “Corners set”';
   }
 }
 
 $('retake').addEventListener('click', () => show('capture'));
 $('clear-corners').addEventListener('click', () => editor?.setCorners([]));
-$('auto-corners').addEventListener('click', () => autoCorners(false));
+$('auto-corners').addEventListener('click', autoCorners);
 $('measure').addEventListener('click', async () => {
   if (!photoData || !editor || editor.corners.length !== 4) return;
   await cvPromise;
   const stage = $('corner-canvas').parentElement!;
+  const prev = board?.seeds.map((s) => board!.toPhoto(s));
   await busy(stage, () => {
-    const t0 = performance.now();
-    session = new BoardSession(photoData!, editor!.corners, { ...params }, { ...tapOpts });
-    session.runAuto();
-    session.lastMs = performance.now() - t0;
+    const b = new Board(photoData!, editor!.corners, settings.sensitivity);
+    // Coming back from "Corners": keep the taps that are still on the board.
+    const kept = (prev ?? []).map((p) => b.toWarped(p)).filter((q) => inRect(b.warp.inner, q.x, q.y));
+    if (kept.length) b.setSeeds(kept);
+    else b.recompute();
+    board = b;
   });
   show('result');
 });
@@ -223,11 +227,11 @@ window.addEventListener('resize', () => {
   if (!$('screen-result').hidden) renderResult();
 });
 
-// ---------- 3. result ------------------------------------------------------------------------
+// ---------- 3. tap brownies + result -----------------------------------------------------------
 const resultCanvas = $<HTMLCanvasElement>('result-canvas');
 
 function renderResult() {
-  if (!session || !photo) return;
+  if (!board || !photo) return;
   const box = resultCanvas.parentElement!.getBoundingClientRect();
   const s = Math.min(box.width / photo.width, box.height / photo.height);
   const cssW = Math.floor(photo.width * s);
@@ -237,33 +241,30 @@ function renderResult() {
   resultCanvas.style.height = `${cssH}px`;
   resultCanvas.width = Math.round(cssW * dpr);
   resultCanvas.height = Math.round(cssH * dpr);
-  drawResult(resultCanvas, photo, session.ranking, session.warp.Hinv, session.warp.corners);
+  const faces = $<HTMLInputElement>('faces').checked && board.seeds.length ? facesOverlay(board, photo.width, photo.height) : null;
+  drawResult(resultCanvas, photo, board, { faces });
 
-  const v = verdict(session.ranking);
+  const v = verdict(board.ranking);
   $('verdict-title').textContent = v.title;
   $('verdict-detail').textContent = v.detail;
-  $('verdict').classList.toggle('tie', session.ranking.isTie);
-  $<HTMLButtonElement>('undo').disabled = !session.canUndo;
-  $('timing').textContent = `Last auto run: ${Math.round(session.lastMs)} ms · darkness cutoff used: ${session.debug?.valMaxUsed ?? '–'}`;
+  $('verdict').className = `verdict ${v.tone}`;
+  const n = board.seeds.length;
+  $('counter').textContent = `${n} brownie${n === 1 ? '' : 's'} tapped`;
+  $('shallow-warn').hidden = !board.tooShallow;
+  const np = board.proposals.length;
+  $('proposal-bar').hidden = np === 0;
+  $('proposal-count').textContent = `${np} suggested: tap to accept`;
+  $('result-hint').hidden = np > 0;
+  $<HTMLButtonElement>('undo').disabled = !board.canUndo;
+  $('timing').textContent = `Last update: ${Math.round(board.lastMs)} ms · typical piece ≈ ${Math.round(board.pieceWidth())} px`;
   if (!$('debug-panel').hidden) renderDebug();
 }
 
 function renderDebug() {
   const panel = $('debug-panel');
   panel.replaceChildren();
-  if (!session) return;
-  const { W, H } = session;
-  const items: [string, HTMLCanvasElement][] = [
-    ['warped (top-down)', imageToCanvas(session.warp.warped)],
-    ['pieces', labelsToCanvas(session.labels, session.warp.warped)],
-  ];
-  if (session.debug) {
-    items.push(['brownie mask', grayToCanvas(session.debug.mask, W, H)]);
-    items.push(['distance', grayToCanvas(session.debug.dist, W, H)]);
-    items.push(['creases', grayToCanvas(session.debug.crease, W, H)]);
-    items.push(['glare zones', grayToCanvas(session.debug.glare, W, H)]);
-  }
-  for (const [name, c] of items) {
+  if (!board) return;
+  for (const [name, c] of debugPanels(board)) {
     const fig = document.createElement('figure');
     const cap = document.createElement('figcaption');
     cap.textContent = name;
@@ -272,131 +273,72 @@ function renderDebug() {
   }
 }
 
-// Tap = add/remove a piece (or sample colour in sample mode). Ignore drags.
+// Tap = accept a suggestion / remove a seed / add a seed. Ignore drags.
 let downAt: { x: number; y: number } | null = null;
 resultCanvas.addEventListener('pointerdown', (e) => (downAt = { x: e.clientX, y: e.clientY }));
 resultCanvas.addEventListener('pointerup', async (e) => {
-  if (!downAt || !session || !photo) return;
+  if (!downAt || !board || !photo) return;
   const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
   downAt = null;
   if (moved > 12) return;
   const r = resultCanvas.getBoundingClientRect();
   const p = { x: ((e.clientX - r.left) / r.width) * photo.width, y: ((e.clientY - r.top) / r.height) * photo.height };
-  const stage = resultCanvas.parentElement!;
-
-  if (sampleMode) {
-    setSampleMode(false);
-    if (!session.sampleAt(p)) return toast('Tap inside the board');
-    params = { ...session.params };
-    store.set('bp.params', params);
-    syncSliders();
-    await busy(stage, () => session!.runAuto());
-    renderResult();
-    toast('Colour sampled and re-measured');
-    return;
-  }
-
-  const out = await busy(stage, () => session!.tapAt(p));
-  if (out === 'outside') toast('That’s outside the board');
-  else if (out === 'missed') toast('Couldn’t isolate a piece there. Try raising tap tolerance in Tuning.');
+  const out = await busy(resultCanvas.parentElement!, () => board!.tapAt(p));
+  if (out === 'outside') toast('That’s outside the corners. Only the board is measured.');
   renderResult();
 });
-
-function setSampleMode(on: boolean) {
-  sampleMode = on;
-  $('result-hint').textContent = on
-    ? '🎯 Tap the middle of a typical brownie'
-    : 'Tap a piece to remove it · tap a missed brownie to add it';
-  $('result-hint').classList.toggle('warn', on);
-}
 
 $('back-corners').addEventListener('click', () => openCorners(true));
 $('new-photo').addEventListener('click', () => show('capture'));
-$('undo').addEventListener('click', () => {
-  session?.undo();
+$('undo').addEventListener('click', async () => {
+  await busy(resultCanvas.parentElement!, () => board?.undo());
+  renderResult();
+});
+$('suggest').addEventListener('click', async () => {
+  if (!board) return;
+  const n = await busy(resultCanvas.parentElement!, () => board!.suggest());
+  toast(n ? `${n} suggested taps: tap one to accept it, or “Accept all”` : 'No new suggestions. Tap the brownies yourself.');
+  if (!board.seeds.length) toast(`${n} guesses. Tip: tap one brownie first, then Suggest works much better.`, 4000);
+  renderResult();
+});
+$('accept-all').addEventListener('click', async () => {
+  await busy(resultCanvas.parentElement!, () => board?.acceptAll());
+  renderResult();
+});
+$('dismiss').addEventListener('click', () => {
+  board?.dismissProposals();
   renderResult();
 });
 
-// ---------- tuning sheet ---------------------------------------------------------------------
-const paramKeys = ['hueCenter', 'hueWidth', 'satMin', 'minAreaPct', 'split', 'crease'] as const;
-
+// ---------- settings sheet ---------------------------------------------------------------------
 function syncSliders() {
-  for (const k of paramKeys) {
-    $<HTMLInputElement>(k).value = String(params[k]);
-    $(`o-${k}`).textContent = String(params[k]);
-  }
-  const auto = params.valMax == null;
-  $<HTMLInputElement>('valAuto').checked = auto;
-  const shownVal = params.valMax ?? session?.debug?.valMaxUsed ?? 110;
-  $<HTMLInputElement>('valMax').value = String(shownVal);
-  $<HTMLInputElement>('valMax').disabled = auto;
-  $('o-valMax').textContent = auto ? `auto (${session?.debug?.valMaxUsed ?? '–'})` : String(params.valMax);
-  $<HTMLInputElement>('glare').checked = params.glare;
-  $<HTMLInputElement>('tolerance').value = String(tapOpts.tolerance);
-  $('o-tolerance').textContent = String(tapOpts.tolerance);
-  $<HTMLInputElement>('grabcut').checked = tapOpts.grabCut;
+  $<HTMLInputElement>('sensitivity').value = String(settings.sensitivity);
+  $('o-sensitivity').textContent = settings.sensitivity.toFixed(2);
 }
 
 let rerunTimer = 0;
-function paramsChanged() {
-  store.set('bp.params', params);
+$<HTMLInputElement>('sensitivity').addEventListener('input', (e) => {
+  settings = { ...settings, sensitivity: Number((e.target as HTMLInputElement).value) };
+  store.set('bp.settings', settings);
   syncSliders();
   clearTimeout(rerunTimer);
   rerunTimer = window.setTimeout(async () => {
-    if (!session) return;
-    session.params = { ...params };
-    await busy(resultCanvas.parentElement!, () => session!.runAuto());
+    await busy(resultCanvas.parentElement!, () => board?.setSensitivity(settings.sensitivity));
     renderResult();
-    syncSliders();
-  }, 300);
-}
-
-for (const k of paramKeys) {
-  $<HTMLInputElement>(k).addEventListener('input', (e) => {
-    params = { ...params, [k]: Number((e.target as HTMLInputElement).value) };
-    paramsChanged();
-  });
-}
-$<HTMLInputElement>('valMax').addEventListener('input', (e) => {
-  params = { ...params, valMax: Number((e.target as HTMLInputElement).value) };
-  paramsChanged();
+  }, 250);
 });
-$<HTMLInputElement>('valAuto').addEventListener('change', (e) => {
-  const on = (e.target as HTMLInputElement).checked;
-  params = { ...params, valMax: on ? null : session?.debug?.valMaxUsed ?? 110 };
-  paramsChanged();
-});
-$<HTMLInputElement>('glare').addEventListener('change', (e) => {
-  params = { ...params, glare: (e.target as HTMLInputElement).checked };
-  paramsChanged();
-});
-$<HTMLInputElement>('tolerance').addEventListener('input', (e) => {
-  tapOpts = { ...tapOpts, tolerance: Number((e.target as HTMLInputElement).value) };
-  if (session) session.tap = { ...tapOpts };
-  store.set('bp.tap', tapOpts);
+$('reset-params').addEventListener('click', async () => {
+  settings = { sensitivity: DEFAULT_SENSITIVITY };
+  store.set('bp.settings', settings);
   syncSliders();
-});
-$<HTMLInputElement>('grabcut').addEventListener('change', (e) => {
-  tapOpts = { ...tapOpts, grabCut: (e.target as HTMLInputElement).checked };
-  if (session) session.tap = { ...tapOpts };
-  store.set('bp.tap', tapOpts);
-});
-$('reset-params').addEventListener('click', () => {
-  params = { ...DEFAULT_PARAMS };
-  tapOpts = { ...DEFAULT_TAP };
-  if (session) session.tap = { ...tapOpts };
-  store.set('bp.tap', tapOpts);
-  paramsChanged();
-});
-$('rerun').addEventListener('click', paramsChanged);
-$('clear-pieces').addEventListener('click', () => {
-  session?.clear();
+  await busy(resultCanvas.parentElement!, () => board?.setSensitivity(settings.sensitivity));
   renderResult();
 });
-$('sample').addEventListener('click', () => {
-  $('sheet').hidden = true;
-  setSampleMode(true);
+$('clear-pieces').addEventListener('click', () => {
+  board?.clear();
+  renderResult();
 });
+$<HTMLInputElement>('faces').addEventListener('change', renderResult);
 $<HTMLInputElement>('debug').addEventListener('change', (e) => {
   $('debug-panel').hidden = !(e.target as HTMLInputElement).checked;
   if (!$('debug-panel').hidden) renderDebug();

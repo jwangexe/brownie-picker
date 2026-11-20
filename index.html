@@ -22,7 +22,7 @@
       <div class="stage">
         <video id="video" playsinline muted autoplay></video>
         <div id="cam-msg" class="stage-msg" hidden></div>
-        <div class="hint">Frame the whole board, as straight down as you can</div>
+        <div class="hint big">📐 Hold the phone <b>high</b>, pointing <b>straight down</b> at the board. Sizes are only accurate from above.</div>
       </div>
       <nav class="bar">
         <label class="btn" for="file">🖼️<span>Photo</span></label>
@@ -32,7 +32,7 @@
       </nav>
     </section>
 
-    <!-- 2. Corners -->
+    <!-- 2. Corners (mandatory) -->
     <section id="screen-corners" class="screen" hidden>
       <div class="stage">
         <canvas id="corner-canvas"></canvas>
@@ -42,11 +42,11 @@
         <button id="retake" class="btn">↩︎<span>Retake</span></button>
         <button id="auto-corners" class="btn">✨<span>Auto</span></button>
         <button id="clear-corners" class="btn">✕<span>Clear</span></button>
-        <button id="measure" class="btn primary" disabled>📏<span>Measure</span></button>
+        <button id="measure" class="btn primary" disabled>✓<span>Corners set</span></button>
       </nav>
     </section>
 
-    <!-- 3. Result -->
+    <!-- 3. Tap brownies + result -->
     <section id="screen-result" class="screen" hidden>
       <div id="verdict" class="verdict">
         <strong id="verdict-title"></strong>
@@ -54,12 +54,20 @@
       </div>
       <div class="stage">
         <canvas id="result-canvas"></canvas>
-        <div id="result-hint" class="hint">Tap a piece to remove it · tap a missed brownie to add it</div>
+        <div id="counter" class="counter">0 brownies tapped</div>
+        <div id="shallow-warn" class="hint warn top" hidden>⚠ Shot too shallow (far edge much shorter than near edge): sizes are unreliable. Retake from higher up.</div>
+        <div id="proposal-bar" class="proposal-bar" hidden>
+          <span id="proposal-count"></span>
+          <button id="accept-all" class="btn small primary">Accept all</button>
+          <button id="dismiss" class="btn small">Dismiss</button>
+        </div>
+        <div id="result-hint" class="hint">Tap each brownie once · tap a dot to remove it</div>
       </div>
       <nav class="bar">
         <button id="back-corners" class="btn">⬚<span>Corners</span></button>
         <button id="undo" class="btn">↶<span>Undo</span></button>
-        <button id="open-tune" class="btn">🎛️<span>Tuning</span></button>
+        <button id="suggest" class="btn">✨<span>Suggest</span></button>
+        <button id="open-tune" class="btn">🎛️<span>More</span></button>
         <button id="new-photo" class="btn primary">📷<span>New</span></button>
       </nav>
     </section>
@@ -67,40 +75,20 @@
     <!-- Tuning sheet -->
     <div id="sheet" class="sheet" hidden>
       <div class="sheet-head">
-        <strong>Tuning</strong>
+        <strong>Settings</strong>
         <button id="close-tune" class="btn small">Done</button>
       </div>
       <div class="sheet-body">
-        <button id="sample" class="btn wide">🎯 Sample brownie colour (then tap a brownie)</button>
-        <div class="row">
-          <label>Darkness cutoff <output id="o-valMax"></output></label>
-          <div class="inline"><input id="valAuto" type="checkbox" /> <label for="valAuto">auto</label></div>
-        </div>
-        <input id="valMax" type="range" min="20" max="250" />
-        <label>Hue centre <output id="o-hueCenter"></output></label>
-        <input id="hueCenter" type="range" min="0" max="179" />
-        <label>Hue width <output id="o-hueWidth"></output></label>
-        <input id="hueWidth" type="range" min="2" max="90" />
-        <label>Min saturation <output id="o-satMin"></output></label>
-        <input id="satMin" type="range" min="0" max="255" />
-        <label>Min piece size (% of board) <output id="o-minAreaPct"></output></label>
-        <input id="minAreaPct" type="range" min="0" max="5" step="0.1" />
-        <label>Split touching pieces <output id="o-split"></output></label>
-        <input id="split" type="range" min="0.1" max="0.9" step="0.05" />
-        <label>Crease detection (lower = more sensitive, 0 = off) <output id="o-crease"></output></label>
-        <input id="crease" type="range" min="0" max="80" />
-        <div class="row"><label for="glare">Glare repair</label><input id="glare" type="checkbox" /></div>
-        <hr />
-        <label>Tap-select tolerance <output id="o-tolerance"></output></label>
-        <input id="tolerance" type="range" min="5" max="60" />
-        <div class="row"><label for="grabcut">Refine taps with GrabCut</label><input id="grabcut" type="checkbox" /></div>
+        <label>Cut-line sensitivity <output id="o-sensitivity"></output></label>
+        <input id="sensitivity" type="range" min="0" max="1" step="0.05" />
+        <p class="muted">Higher: fainter and shorter dark lines count as cuts between pieces. Lower: more crust cracks are ignored.</p>
+        <div class="row"><label for="faces">Show top face / side face</label><input id="faces" type="checkbox" /></div>
+        <div class="row"><label for="debug">Debug view</label><input id="debug" type="checkbox" /></div>
         <hr />
         <div class="btn-row">
-          <button id="rerun" class="btn">↻ Re-run auto</button>
-          <button id="clear-pieces" class="btn">Clear all</button>
+          <button id="clear-pieces" class="btn">Clear all taps</button>
           <button id="reset-params" class="btn">Defaults</button>
         </div>
-        <div class="row"><label for="debug">Debug view</label><input id="debug" type="checkbox" /></div>
         <p id="timing" class="muted"></p>
       </div>
     </div>

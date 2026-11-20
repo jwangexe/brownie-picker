@@ -11,32 +11,49 @@ export interface RGBAImage {
 }
 
 export interface Piece {
-  /** Label value in the label map. */
+  /** Label value in the label map (= seed index + 1). */
   id: number;
-  /** Pixel count in the warped (top-down) view. */
+  /** Measured area: top-face pixels in the warped (top-down) view. */
   area: number;
+  /** Whole mask, top + side face. */
+  maskArea: number;
   centroid: Pt;
-  /** Outer contour in warped coordinates. */
+  /** Outer contour of the whole mask, warped coordinates. */
   contour: Pt[];
-  /** area / convex hull area. Low values hint at two pieces merged into one. */
-  solidity: number;
-  /** Touches the warped image border: the piece may be cut off by a corner placed too tight. */
-  touchesEdge: boolean;
-  /** Overlaps a detected glare highlight: its area may be underestimated. */
-  nearGlare?: boolean;
+  /** The seed (tap) this piece grew from, warped coordinates. */
+  seed: Pt;
 }
 
+/** 'two' = > 1.8× median (might be two pieces); 'fragment' = < 0.4× median. */
+export type PieceFlag = 'two' | 'fragment' | null;
+
 export interface RankedPiece extends Piece {
+  /** 1 = biggest. */
   rank: number;
   /** Area as % of the mean piece area (100 = average). */
   pctOfMean: number;
+  ratioToMedian: number;
+  flag: PieceFlag;
 }
+
+export type RankingStatus =
+  | 'empty' // no pieces
+  | 'one' // a single piece: nothing to compare
+  | 'broken' // > 30% of pieces flagged: no winner
+  | 'check' // the biggest piece is flagged: check it first
+  | 'ok';
 
 export interface Ranking {
   pieces: RankedPiece[];
+  status: RankingStatus;
+  median: number;
+  flagged: number;
+  /** Only set when status is 'ok'. */
   winner: RankedPiece | null;
   runnerUp: RankedPiece | null;
-  /** How much bigger the winner is than the runner-up, in %. */
+  /** The flagged piece to check, when status is 'check'. */
+  check?: RankedPiece;
+  /** How much bigger #1 is than #2, in %. */
   marginPct: number | null;
   isTie: boolean;
 }

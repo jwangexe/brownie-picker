@@ -1,14 +1,54 @@
-import type { Piece, Ranking } from './types';
+import type { Piece, PieceFlag, RankedPiece, Ranking } from './types';
 
 /** Below this margin between #1 and #2 the result is called a tie (measurement noise is a few %). */
 export const TIE_THRESHOLD_PCT = 5;
+/** Bigger than this × the median piece: probably two pieces merged. */
+export const TWO_PIECES_RATIO = 1.8;
+/** Smaller than this × the median piece: probably a fragment. */
+export const FRAGMENT_RATIO = 0.4;
+/** With more than this share of pieces flagged, no winner is named at all. */
+export const MAX_FLAGGED_SHARE = 0.3;
 
+export function flagFor(ratioToMedian: number): PieceFlag {
+  if (ratioToMedian > TWO_PIECES_RATIO) return 'two';
+  if (ratioToMedian < FRAGMENT_RATIO) return 'fragment';
+  return null;
+}
+
+/**
+ * Ranks pieces by area (#1 = biggest) and decides what to tell the user. A flagged piece is never
+ * crowned: if the biggest piece might really be two pieces the verdict is "check #N"; if too many
+ * pieces look wrong there is no verdict at all.
+ */
 export function rankPieces(pieces: Piece[], tiePct = TIE_THRESHOLD_PCT): Ranking {
   const sorted = [...pieces].sort((a, b) => b.area - a.area);
-  const mean = sorted.reduce((s, p) => s + p.area, 0) / Math.max(1, sorted.length);
-  const ranked = sorted.map((p, i) => ({ ...p, rank: i + 1, pctOfMean: (p.area / mean) * 100 }));
-  const winner = ranked[0] ?? null;
-  const runnerUp = ranked[1] ?? null;
-  const marginPct = winner && runnerUp ? (winner.area / runnerUp.area - 1) * 100 : null;
-  return { pieces: ranked, winner, runnerUp, marginPct, isTie: marginPct != null && marginPct < tiePct };
+  const n = sorted.length;
+  const mean = sorted.reduce((s, p) => s + p.area, 0) / Math.max(1, n);
+  // Typical piece = median, recomputed once without the obvious fragments: half-hidden pieces at
+  // the back of a pile shouldn't make every whole piece look "too big".
+  const med = (a: number[]) => (a.length ? (a[Math.floor((a.length - 1) / 2)] + a[Math.ceil((a.length - 1) / 2)]) / 2 : 0);
+  const areasAsc = sorted.map((p) => p.area).reverse();
+  const m0 = med(areasAsc);
+  const kept = areasAsc.filter((a) => a >= FRAGMENT_RATIO * m0);
+  const median = med(kept.length >= 3 ? kept : areasAsc);
+  // Size flags need a few pieces before "the median" means anything.
+  const canFlag = n >= 3;
+  const ranked: RankedPiece[] = sorted.map((p, i) => {
+    const ratio = median ? p.area / median : 1;
+    return { ...p, rank: i + 1, pctOfMean: (p.area / mean) * 100, ratioToMedian: ratio, flag: canFlag ? flagFor(ratio) : null };
+  });
+  const flagged = ranked.filter((p) => p.flag).length;
+  const base = { pieces: ranked, median, flagged };
+
+  if (n === 0) return { ...base, status: 'empty', winner: null, runnerUp: null, marginPct: null, isTie: false };
+  if (n === 1) return { ...base, status: 'one', winner: null, runnerUp: null, marginPct: null, isTie: false };
+  if (flagged / n > MAX_FLAGGED_SHARE) {
+    return { ...base, status: 'broken', winner: null, runnerUp: null, marginPct: null, isTie: false };
+  }
+  const [first, second] = ranked;
+  const marginPct = (first.area / second.area - 1) * 100;
+  if (first.flag) {
+    return { ...base, status: 'check', check: first, winner: null, runnerUp: null, marginPct, isTie: false };
+  }
+  return { ...base, status: 'ok', winner: first, runnerUp: second, marginPct, isTie: marginPct < tiePct };
 }

@@ -1,25 +1,24 @@
-// Dev-only page: runs the pipeline over test-images/ and shows the results in a grid.
-import { detectBoard } from './pipeline/autocorners';
-import { DEFAULT_PARAMS } from './pipeline/segment';
+// Dev-only page: runs the tap-seeded pipeline over test-images/ and shows result + debug panels.
+// Each photo's corners and taps come from NAME.taps.json; tap the photo to add/remove seeds, then
+// "Save" writes the fixture back (this is how the cafe-01 regression fixture is maintained).
+import { Board } from './pipeline/board';
 import type { Pt, RGBAImage } from './pipeline/types';
+import { inRect } from './pipeline/warp';
 import { CornerEditor } from './ui/cornerEditor';
 import { loadOpenCV } from './ui/loadOpenCV';
-import { drawResult, grayToCanvas, imageToCanvas, labelsToCanvas, pieceWarning, verdict } from './ui/render';
-import { BoardSession } from './ui/session';
+import { debugPanels, drawResult, facesOverlay, flagText, verdict } from './ui/render';
+
+interface Fixture {
+  corners: Pt[];
+  taps: Pt[];
+}
 
 const images = import.meta.glob('/test-images/**/*.{jpg,jpeg,png,webp,JPG,JPEG,PNG}', {
   eager: true,
   query: '?url',
   import: 'default',
 }) as Record<string, string>;
-const sidecars = import.meta.glob('/test-images/**/*.corners.json', { eager: true, import: 'default' }) as Record<
-  string,
-  { corners: Pt[] }
->;
-const truths = import.meta.glob('/test-images/**/*.truth.json', { eager: true, import: 'default' }) as Record<
-  string,
-  { biggest: number; sharesPct: number[] }
->;
+const fixtures = import.meta.glob('/test-images/**/*.taps.json', { eager: true, import: 'default' }) as Record<string, Fixture>;
 
 const grid = document.getElementById('grid')!;
 const intro = document.getElementById('intro')!;
@@ -46,70 +45,74 @@ function fig(name: string, c: HTMLCanvasElement) {
   return f;
 }
 
+function button(label: string, primary = false) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  if (primary) b.className = 'primary';
+  return b;
+}
+
 async function runOne(path: string, url: string) {
   const base = path.replace(/\.[^.]+$/, '');
   const card = document.createElement('div');
   card.className = 'card';
   card.innerHTML = `<h2>${path.replace('/test-images/', '')}</h2><div class="stats">Running…</div>`;
   grid.append(card);
-
   const { canvas: photo, data } = await loadPhoto(url);
-  let corners: Pt[] | null = sidecars[`${base}.corners.json`]?.corners ?? null;
-  let cornerSrc = corners ? 'sidecar' : 'auto-detected';
-  corners ??= detectBoard(data);
-  if (!corners) {
-    cornerSrc = 'none found: whole image';
-    corners = [{ x: 0, y: 0 }, { x: data.width - 1, y: 0 }, { x: data.width - 1, y: data.height - 1 }, { x: 0, y: data.height - 1 }];
+  const fx = fixtures[`${base}.taps.json`];
+  if (!fx) {
+    card.querySelector('.stats')!.innerHTML = 'No <code>.taps.json</code> yet: set corners to start.';
+    const b = button('Set corners', true);
+    card.append(b);
+    b.onclick = () => editCorners([], []);
+    return;
   }
 
-  const render = (cs: Pt[]) => {
-    const t0 = performance.now();
-    const s = new BoardSession(data, cs, { ...DEFAULT_PARAMS });
-    s.runAuto();
-    const ms = performance.now() - t0;
+  let board = new Board(data, fx.corners);
+  board.setSeeds(fx.taps.map((p) => board.toWarped(p)));
+
+  const show = () => {
     const out = document.createElement('canvas');
     out.width = photo.width;
     out.height = photo.height;
-    drawResult(out, photo, s.ranking, s.warp.Hinv, s.warp.corners);
-    const v = verdict(s.ranking);
-    const truth = truths[`${base}.truth.json`];
-    let truthLine = '';
-    if (truth) {
-      const top = truth.sharesPct.indexOf(Math.max(...truth.sharesPct));
-      // Ground truth piece order differs from ranking; compare by top share only.
-      const predTop = s.ranking.winner ? (s.ranking.winner.area / s.ranking.pieces.reduce((a, p) => a + p.area, 0)) * 100 : 0;
-      truthLine = `<br>Ground truth: ${truth.sharesPct.length} pieces, biggest share ${truth.sharesPct[top].toFixed(2)}% · measured ${predTop.toFixed(2)}% <span class="${Math.abs(predTop - truth.sharesPct[top]) / truth.sharesPct[top] < 0.05 ? 'ok' : 'bad'}">(${(((predTop - truth.sharesPct[top]) / truth.sharesPct[top]) * 100).toFixed(1)}%)</span>`;
-    }
-    const rows = s.ranking.pieces
-      .map((p) => `<tr><td>#${p.rank}</td><td>${p.area}</td><td>${p.pctOfMean.toFixed(1)}%</td><td>${p.solidity.toFixed(2)}</td><td>${pieceWarning(p)}</td></tr>`)
+    drawResult(out, photo, board);
+    const facesC = document.createElement('canvas');
+    facesC.width = photo.width;
+    facesC.height = photo.height;
+    drawResult(facesC, photo, board, { faces: board.seeds.length ? facesOverlay(board, photo.width, photo.height) : null });
+    out.onclick = (e) => {
+      const r = out.getBoundingClientRect();
+      board.tapAt({ x: ((e.clientX - r.left) / r.width) * photo.width, y: ((e.clientY - r.top) / r.height) * photo.height });
+      show();
+    };
+    const v = verdict(board.ranking);
+    const rows = board.ranking.pieces
+      .map((p) => `<tr><td>#${p.rank}</td><td>${p.area}</td><td>${Math.round((100 * p.area) / Math.max(1, p.maskArea))}%</td><td>${p.ratioToMedian.toFixed(2)}×</td><td>${flagText(p)}</td></tr>`)
       .join('');
     const stats = document.createElement('div');
     stats.className = 'stats';
-    stats.innerHTML = `<span class="win">${v.title}</span><br>${v.detail}<br>Corners: ${cornerSrc} · ${Math.round(ms)} ms · darkness cutoff ${s.debug?.valMaxUsed}${truthLine}
-      <details><summary>Pieces</summary><table><tr><th>rank</th><th>px</th><th>% mean</th><th>solidity</th><th></th></tr>${rows}</table></details>`;
-    const imgs = document.createElement('div');
-    imgs.className = 'imgs';
-    imgs.append(
-      fig('warped', imageToCanvas(s.warp.warped)),
-      fig('pieces', labelsToCanvas(s.labels, s.warp.warped)),
-      fig('mask', grayToCanvas(s.debug!.mask, s.W, s.H)),
-      fig('distance', grayToCanvas(s.debug!.dist, s.W, s.H)),
-    );
-    return { out, stats, imgs };
-  };
-
-  const show = (cs: Pt[]) => {
-    const { out, stats, imgs } = render(cs);
+    stats.innerHTML = `<span class="win">${v.title}</span><br>${v.detail}<br>${board.seeds.length} taps = ${board.pieces.length} pieces · ${Math.round(board.lastMs)} ms · foreshortening ${board.foreshortening.toFixed(2)}${board.tooShallow ? ' <span class="bad">(too shallow)</span>' : ''}
+      <details><summary>Pieces</summary><table><tr><th>rank</th><th>top px</th><th>top/mask</th><th>× median</th><th></th></tr>${rows}</table></details>`;
     const btns = document.createElement('div');
     btns.className = 'btns';
-    const edit = document.createElement('button');
-    edit.textContent = 'Edit corners';
-    btns.append(edit);
+    const save = button('Save taps', true);
+    const sug = button('Suggest');
+    const acc = button(`Accept ${board.proposals.length}`);
+    const undo = button('Undo');
+    const edit = button('Edit corners');
+    btns.append(save, sug, acc, undo, edit);
+    save.onclick = () => saveFixture(path, board.warp.corners, board.seeds.map((s) => board.toPhoto(s)));
+    sug.onclick = () => (board.suggest(), show());
+    acc.onclick = () => (board.acceptAll(), show());
+    undo.onclick = () => (board.undo(), show());
+    edit.onclick = () => editCorners(board.warp.corners, board.seeds.map((s) => board.toPhoto(s)));
+    const imgs = document.createElement('div');
+    imgs.className = 'imgs';
+    imgs.append(fig('top face (cyan) / side face (red)', facesC), ...debugPanels(board).map(([n, c]) => fig(n, c)));
     card.replaceChildren(card.firstElementChild!, out, stats, btns, imgs);
-    edit.onclick = () => startEdit(cs);
   };
 
-  const startEdit = (cs: Pt[]) => {
+  const editCorners = (cs: Pt[], taps: Pt[]) => {
     const wrap = document.createElement('div');
     wrap.className = 'editor';
     wrap.style.aspectRatio = `${photo.width} / ${photo.height}`;
@@ -117,27 +120,29 @@ async function runOne(path: string, url: string) {
     wrap.append(c);
     const btns = document.createElement('div');
     btns.className = 'btns';
-    const save = document.createElement('button');
-    save.className = 'primary';
-    save.textContent = 'Save corners & re-run';
-    const cancel = document.createElement('button');
-    cancel.textContent = 'Cancel';
-    btns.append(save, cancel);
+    const ok = button('Corners set', true);
+    btns.append(ok);
     card.replaceChildren(card.firstElementChild!, wrap, btns);
     const ed = new CornerEditor(c, photo);
     ed.layout();
     ed.setCorners(cs);
-    cancel.onclick = () => (ed.destroy(), show(cs));
-    save.onclick = async () => {
+    ok.onclick = () => {
       if (ed.corners.length !== 4) return alert('Place 4 corners');
-      const res = await fetch('/__save-corners', { method: 'POST', body: JSON.stringify({ image: path, corners: ed.corners }) });
-      if (!res.ok) alert(`Save failed: ${await res.text()}`);
       ed.destroy();
-      show(ed.corners);
+      board = new Board(data, ed.corners);
+      const kept = taps.map((p) => board.toWarped(p)).filter((q) => inRect(board.warp.inner, q.x, q.y));
+      board.setSeeds(kept);
+      show();
     };
   };
 
-  show(corners!);
+  show();
+}
+
+async function saveFixture(path: string, corners: Pt[], taps: Pt[]) {
+  const r = (p: Pt) => ({ x: Math.round(p.x), y: Math.round(p.y) });
+  const res = await fetch('/__save-taps', { method: 'POST', body: JSON.stringify({ image: path, corners: corners.map(r), taps: taps.map(r) }) });
+  alert(res.ok ? `Saved ${taps.length} taps` : `Save failed: ${await res.text()}`);
 }
 
 (async () => {
@@ -150,6 +155,7 @@ async function runOne(path: string, url: string) {
   await loadOpenCV((f) => (document.getElementById('ld')!.textContent = `Loading OpenCV ${Math.round(f * 100)}%`));
   document.getElementById('ld')!.textContent = `${entries.length} image(s)`;
   for (const [path, url] of entries.sort()) {
+    if (path.includes('/out/') || path.includes('/attachments/')) continue;
     try {
       await runOne(path, url);
     } catch (e) {

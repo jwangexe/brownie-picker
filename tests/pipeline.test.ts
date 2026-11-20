@@ -1,121 +1,142 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { initCV } from './cvnode';
-import { runPipeline } from '../src/pipeline';
-import { DEFAULT_PARAMS } from '../src/pipeline/segment';
-import { piecesFromLabels } from '../src/pipeline/pieces';
-import { labImage, tapSelect } from '../src/pipeline/tapselect';
-import { warpBoard } from '../src/pipeline/warp';
+import { Board } from '../src/pipeline/board';
 import { evaluate, makeScene, type SynthOptions } from '../src/synth/synth';
 
 beforeAll(async () => {
   await initCV();
 });
 
-function check(opts: SynthOptions) {
+/** Tap-seeded run: one tap per ground-truth piece, at its centroid (what a user would do). */
+function tapped(opts: SynthOptions) {
   const scene = makeScene(opts);
-  const res = runPipeline(scene.photo, scene.corners, DEFAULT_PARAMS);
-  const ev = evaluate(scene, res.pieces, res.warp.warped.width, res.warp.warped.height);
-  return { scene, res, ev };
+  const board = new Board(scene.photo, scene.corners);
+  board.setSeeds(scene.taps.map((p) => board.toWarped(p)));
+  const ev = evaluate(scene, board.pieces, board.warp.inner);
+  return { scene, board, ev };
 }
 
 const summary = (ev: ReturnType<typeof evaluate>) =>
   `missed=${ev.missed.length} spurious=${ev.spurious} dup=${ev.duplicates} ` +
   `median=${(ev.medianErr * 100).toFixed(2)}% max=${(ev.maxErr * 100).toFixed(2)}%`;
 
-describe('automatic pipeline on separated pieces', () => {
-  for (const seed of [1, 2, 3, 4, 5, 6]) {
-    const tilt = [0, 0.3, 0.5, 0.7, 0.4, 0.6][seed - 1];
-    it(`seed ${seed}, tilt ${tilt}: finds all 12, correct winner, small area error`, () => {
-      const { scene, ev } = check({ seed, tilt, winnerMargin: 0.1 });
-      const msg = summary(ev);
-      expect(ev.missed, msg).toHaveLength(0);
-      expect(ev.spurious, msg).toBe(0);
-      expect(ev.duplicates, msg).toBe(0);
-      expect(ev.predictedBiggest, msg).toBe(scene.biggest);
-      expect(ev.medianErr, msg).toBeLessThan(0.03);
-      expect(ev.maxErr, msg).toBeLessThan(0.06);
+function expectGood(scene: ReturnType<typeof makeScene>, board: Board, ev: ReturnType<typeof evaluate>, maxErr = 0.05) {
+  const msg = summary(ev);
+  expect(board.pieces.length, msg).toBe(board.seeds.length);
+  expect(board.pieces.length, msg).toBe(scene.gtAreas.length - 1);
+  expect(ev.missed, msg).toHaveLength(0);
+  expect(ev.duplicates, msg).toBe(0);
+  expect(ev.maxErr, msg).toBeLessThan(maxErr);
+}
+
+describe('tap-seeded watershed', () => {
+  for (const [seed, tilt] of [[1, 0], [2, 0.3], [3, 0.5], [4, 0.7], [5, 0.4], [6, 0.6]] as const) {
+    it(`separated pieces, seed ${seed}, tilt ${tilt}: one piece per tap, areas within 5%, right winner`, () => {
+      const { scene, board, ev } = tapped({ seed, tilt, winnerMargin: 0.1 });
+      expectGood(scene, board, ev);
+      expect(ev.predictedBiggest, summary(ev)).toBe(scene.biggest);
+      expect(board.ranking.status).toBe('ok');
     });
   }
-});
 
-describe('hard cases', () => {
-  it('glare: ranking survives, and any piece glare hurts is flagged', () => {
-    for (const seed of [11, 12, 13, 14, 15]) {
-      const { scene, res, ev } = check({ seed, tilt: 0.4, glare: true, winnerMargin: 0.1 });
-      const msg = `seed ${seed}: ${summary(ev)}`;
-      expect(ev.missed, msg).toHaveLength(0);
-      expect(ev.predictedBiggest, msg).toBe(scene.biggest);
-      // Glare on a corner can't be fully recovered; the requirement is that it is never silent.
-      for (const p of res.pieces) {
-        if ((ev.errById.get(p.id) ?? 0) > 0.05) expect(p.nearGlare, `${msg} piece ${p.id}`).toBe(true);
-      }
-    }
-  });
-
-  it('touching pieces separated only by a thin crease are split', () => {
+  it('touching pieces separated only by thin dark gaps', () => {
     for (const seed of [21, 22, 23]) {
-      const { scene, ev } = check({ seed, tilt: 0.3, touching: true });
-      const msg = `seed ${seed}: ${summary(ev)}`;
-      expect(ev.missed, msg).toHaveLength(0);
-      expect(ev.duplicates, msg).toBe(0);
-      expect(ev.medianErr, msg).toBeLessThan(0.05);
-      const areas = scene.gtAreas.slice(1).sort((a, b) => b - a);
-      if (areas[0] / areas[1] > 1.05) expect(ev.predictedBiggest, msg).toBe(scene.biggest);
+      const { scene, board, ev } = tapped({ seed, tilt: 0.3, touching: true });
+      expectGood(scene, board, ev);
     }
   });
 
-  it('a 2% difference is reported as a tie', () => {
-    for (const seed of [31, 32]) {
-      const { res } = check({ seed, tilt: 0.3, winnerMargin: 0.02 });
-      expect(res.ranking.isTie, `margin ${res.ranking.marginPct?.toFixed(2)}%`).toBe(true);
+  it('crack texture on top does not move boundaries (areas within 5%)', () => {
+    for (const seed of [51, 52, 53]) {
+      const { scene, board, ev } = tapped({ seed, tilt: 0.4, touching: true, cracks: true });
+      expectGood(scene, board, ev);
+    }
+    for (const seed of [54, 55]) {
+      const { scene, board, ev } = tapped({ seed, tilt: 0.4, cracks: true, winnerMargin: 0.1 });
+      expectGood(scene, board, ev);
+    }
+  });
+
+  it('shallow camera angle (far edge ~2.3× shorter): areas still within 5%', () => {
+    for (const seed of [61, 62]) {
+      const { scene, board, ev } = tapped({ seed, tilt: 1.5, winnerMargin: 0.1 });
+      expect(board.foreshortening).toBeGreaterThan(2);
+      expect(board.tooShallow).toBe(false);
+      expectGood(scene, board, ev);
+    }
+  });
+
+  it('flags a quad whose near edge is > 2.5× the far edge as too shallow', () => {
+    const { board } = tapped({ seed: 63, tilt: 1.9 });
+    expect(board.foreshortening).toBeGreaterThan(2.5);
+    expect(board.tooShallow).toBe(true);
+  });
+
+  it('visible side faces are excluded: only top faces are measured', () => {
+    for (const seed of [71, 72]) {
+      const { scene, board, ev } = tapped({ seed, tilt: 0.5, sideFace: 14, winnerMargin: 0.1 });
+      expectGood(scene, board, ev);
+      // The masks do include the side faces; the measured area doesn't.
+      const side = board.pieces.reduce((s, p) => s + p.maskArea - p.area, 0);
+      expect(side).toBeGreaterThan(0);
     }
   });
 });
 
-describe('tap-to-select', () => {
-  it('segments each piece from a tap at its centre', () => {
-    const scene = makeScene({ seed: 41, tilt: 0.4, winnerMargin: 0.1 });
-    const warp = warpBoard(scene.photo, scene.corners);
-    const { width: W, height: H } = warp.warped;
-    const lab = labImage(warp.warped);
-    const labels = new Int32Array(W * H);
-    // Tap the centre of every ground-truth piece (mapped from board to warped coordinates).
-    for (let k = 1; k < scene.gtAreas.length; k++) {
-      let sx = 0, sy = 0, n = 0;
-      for (let i = 0; i < scene.gtLabels.length; i++) {
-        if (scene.gtLabels[i] === k) {
-          sx += i % scene.boardW;
-          sy += Math.floor(i / scene.boardW);
-          n++;
-        }
-      }
-      const seed = { x: (sx / n / (scene.boardW - 1)) * (W - 1), y: (sy / n / (scene.boardH - 1)) * (H - 1) };
-      const mask = tapSelect(warp.warped, lab, labels, seed);
-      expect(mask, `piece ${k}`).not.toBeNull();
-      for (let i = 0; i < mask!.length; i++) if (mask![i]) labels[i] = k;
-    }
-    const pieces = piecesFromLabels(labels, W, H);
-    const ev = evaluate(scene, pieces, W, H);
-    const msg = summary(ev);
-    expect(ev.missed, msg).toHaveLength(0);
-    expect(ev.predictedBiggest, msg).toBe(scene.biggest);
-    expect(ev.medianErr, msg).toBeLessThan(0.04);
-    expect(ev.maxErr, msg).toBeLessThan(0.08);
+describe('tapping', () => {
+  it('add / remove / outside, and piece count always equals tap count', () => {
+    const scene = makeScene({ seed: 81, tilt: 0.3 });
+    const board = new Board(scene.photo, scene.corners);
+    const [a, b, c] = scene.taps;
+    expect(board.tapAt(a)).toBe('added');
+    expect(board.tapAt(b)).toBe('added');
+    expect(board.tapAt(c)).toBe('added');
+    expect(board.pieces).toHaveLength(3);
+    expect(board.tapAt({ x: b.x + 2, y: b.y - 2 })).toBe('removed');
+    expect(board.pieces).toHaveLength(2);
+    expect(board.tapAt({ x: 3, y: 3 })).toBe('outside');
+    expect(board.pieces).toHaveLength(2);
+    board.undo(); // undoes the removal
+    expect(board.pieces).toHaveLength(3);
   });
 
-  it('refuses a tap on already-selected pixels', () => {
-    const scene = makeScene({ seed: 42 });
-    const warp = warpBoard(scene.photo, scene.corners);
-    const labels = new Int32Array(warp.warped.width * warp.warped.height).fill(1);
-    expect(tapSelect(warp.warped, labImage(warp.warped), labels, { x: 50, y: 50 })).toBeNull();
+  it('two taps on one piece split it into two (that is how a merged piece is fixed)', () => {
+    const scene = makeScene({ seed: 82, tilt: 0.3 });
+    const board = new Board(scene.photo, scene.corners);
+    const w = board.toWarped(scene.taps[0]);
+    const r = 0.45 * board.pieceWidth();
+    board.setSeeds([{ x: w.x - r, y: w.y }, { x: w.x + r, y: w.y }]);
+    expect(board.pieces).toHaveLength(2);
+    expect(board.pieces.every((p) => p.area > 0)).toBe(true);
+  });
+});
+
+describe('suggest seeds', () => {
+  it('after one tap, proposes one seed per remaining piece and adds nothing until accepted', () => {
+    for (const opts of [
+      { seed: 91, tilt: 0.4, winnerMargin: 0.1 },
+      { seed: 92, tilt: 0.3, touching: true },
+      { seed: 93, tilt: 0.4, touching: true, cracks: true }, // cracks must not cause splits
+      { seed: 94, tilt: 0.4, cracks: true, winnerMargin: 0.1 },
+    ] satisfies SynthOptions[]) {
+      const scene = makeScene(opts);
+      const board = new Board(scene.photo, scene.corners);
+      board.tapAt(scene.taps[0]); // one tap teaches it what a brownie looks like
+      const n = board.suggest();
+      expect(board.pieces, JSON.stringify(opts)).toHaveLength(1);
+      expect(n, JSON.stringify(opts)).toBe(scene.gtAreas.length - 2);
+      board.acceptAll();
+      const ev = evaluate(scene, board.pieces, board.warp.inner);
+      expect(ev.missed, `${JSON.stringify(opts)} ${summary(ev)}`).toHaveLength(0);
+      expect(ev.duplicates).toBe(0);
+    }
   });
 });
 
 describe('performance', () => {
-  it('runs the automatic pipeline well under a second in Node', () => {
-    const scene = makeScene({ seed: 7 });
-    runPipeline(scene.photo, scene.corners); // warm-up
-    const { ms } = runPipeline(scene.photo, scene.corners);
-    expect(ms).toBeLessThan(1000);
+  it('re-segments after a tap well under a second', () => {
+    const { board } = tapped({ seed: 7 });
+    board.recompute();
+    expect(board.lastMs).toBeLessThan(1000);
   });
 });

@@ -1,0 +1,109 @@
+{
+  "image": "cafe-01.jpg",
+  "imageSize": {
+    "width": 1280,
+    "height": 960
+  },
+  "corners": [
+    {
+      "x": 0,
+      "y": 180
+    },
+    {
+      "x": 1279,
+      "y": 176
+    },
+    {
+      "x": 1279,
+      "y": 690
+    },
+    {
+      "x": 0,
+      "y": 690
+    }
+  ],
+  "taps": [
+    {
+      "x": 77,
+      "y": 237
+    },
+    {
+      "x": 320,
+      "y": 250
+    },
+    {
+      "x": 430,
+      "y": 210
+    },
+    {
+      "x": 538,
+      "y": 300
+    },
+    {
+      "x": 544,
+      "y": 210
+    },
+    {
+      "x": 750,
+      "y": 270
+    },
+    {
+      "x": 810,
+      "y": 213
+    },
+    {
+      "x": 954,
+      "y": 270
+    },
+    {
+      "x": 1100,
+      "y": 270
+    },
+    {
+      "x": 1216,
+      "y": 256
+    },
+    {
+      "x": 77,
+      "y": 500
+    },
+    {
+      "x": 237,
+      "y": 448
+    },
+    {
+      "x": 384,
+      "y": 474
+    },
+    {
+      "x": 538,
+      "y": 500
+    },
+    {
+      "x": 698,
+      "y": 486
+    },
+    {
+      "x": 883,
+      "y": 474
+    },
+    {
+      "x": 1043,
+      "y": 486
+    },
+    {
+      "x": 1190,
+      "y": 486
+    }
+  ],
+  "knownOversize": [
+    {
+      "tap": 5,
+      "reason": "Real geometry, not a segmentation error: this back-row piece leans forward on the front row, so its top is tilted toward the camera and genuinely covers ~2x the photo area of a flat piece. Correct output is the flag + \"Check #N\"."
+    },
+    {
+      "tap": 13,
+      "reason": "Open segmentation issue: this front piece's mask spills up into the dark underside of the leaning piece behind it (stacked pile). Flagged, so it is never crowned."
+    }
+  ]
+}

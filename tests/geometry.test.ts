@@ -28,26 +28,55 @@ describe('geometry helpers', () => {
 });
 
 const piece = (id: number, area: number): Piece => ({
-  id, area, centroid: { x: 0, y: 0 }, contour: [], solidity: 1, touchesEdge: false,
+  id, area, maskArea: area, centroid: { x: 0, y: 0 }, contour: [], seed: { x: 0, y: 0 },
 });
+const pieces = (...areas: number[]) => areas.map((a, i) => piece(i + 1, a));
 
 describe('rankPieces', () => {
-  it('ranks by area, reports % of mean and the margin', () => {
-    const r = rankPieces([piece(1, 100), piece(2, 150), piece(3, 50)]);
+  it('ranks by area (#1 = biggest), reports % of mean and the margin', () => {
+    const r = rankPieces(pieces(100, 150, 120));
+    expect(r.status).toBe('ok');
     expect(r.winner?.id).toBe(2);
-    expect(r.runnerUp?.id).toBe(1);
-    expect(r.marginPct).toBeCloseTo(50);
+    expect(r.winner?.rank).toBe(1);
+    expect(r.runnerUp?.id).toBe(3);
+    expect(r.marginPct).toBeCloseTo(25);
     expect(r.isTie).toBe(false);
-    expect(r.pieces.map((p) => Math.round(p.pctOfMean))).toEqual([150, 100, 50]);
   });
   it('calls margins under 5% a tie', () => {
-    expect(rankPieces([piece(1, 1000), piece(2, 1040)]).isTie).toBe(true);
-    expect(rankPieces([piece(1, 1000), piece(2, 1060)]).isTie).toBe(false);
+    expect(rankPieces(pieces(1000, 1040, 900)).isTie).toBe(true);
+    expect(rankPieces(pieces(1000, 1060, 900)).isTie).toBe(false);
   });
-  it('handles 0 and 1 pieces', () => {
-    expect(rankPieces([]).winner).toBeNull();
+  it('handles 0 and 1 pieces without naming a winner', () => {
+    expect(rankPieces([]).status).toBe('empty');
     const one = rankPieces([piece(1, 10)]);
-    expect(one.winner?.id).toBe(1);
-    expect(one.marginPct).toBeNull();
+    expect(one.status).toBe('one');
+    expect(one.winner).toBeNull();
+  });
+  it('flags > 1.8× median as "two" and < 0.4× as "fragment"', () => {
+    const r = rankPieces(pieces(100, 105, 95, 110, 30, 210, 220));
+    const flag = (a: number) => r.pieces.find((p) => p.area === a)!.flag;
+    expect(flag(220)).toBe('two');
+    expect(flag(210)).toBe('two');
+    expect(flag(30)).toBe('fragment');
+    expect(flag(110)).toBeNull();
+  });
+  it('never crowns a flagged piece: biggest flagged -> "check #1"', () => {
+    const r = rankPieces(pieces(100, 105, 95, 110, 98, 102, 250));
+    expect(r.status).toBe('check');
+    expect(r.winner).toBeNull();
+    expect(r.check?.rank).toBe(1);
+    expect(r.check?.area).toBe(250);
+  });
+  it('more than 30% flagged -> no winner at all', () => {
+    const r = rankPieces(pieces(100, 100, 100, 20, 25, 300, 100));
+    expect(r.flagged).toBe(3);
+    expect(r.status).toBe('broken');
+    expect(r.winner).toBeNull();
+  });
+  it('the median ignores fragments, so half-hidden pieces do not inflate everyone else', () => {
+    // 6 normal pieces + 6 slivers: plain median would be ~60 and flag every normal piece as "two".
+    const r = rankPieces(pieces(100, 110, 95, 105, 98, 102, 10, 12, 8, 15, 11, 9));
+    expect(r.median).toBeGreaterThan(95);
+    expect(r.pieces.filter((p) => p.flag === 'two')).toHaveLength(0);
   });
 });

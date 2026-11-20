@@ -1,0 +1,19 @@
+{
+  "options": {
+    "seed": 52,
+    "tilt": 0.4,
+    "touching": true,
+    "cracks": true
+  },
+  "biggest": 8,
+  "sharesPct": [
+    12.14,
+    13.07,
+    9.86,
+    14.89,
+    15.07,
+    11.49,
+    8.19,
+    15.3
+  ]
+}

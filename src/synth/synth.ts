@@ -15,6 +15,10 @@ export interface SynthOptions {
   /** Cut pieces in rows from one slab so neighbours touch, separated only by a thin dark crease. */
   touching?: boolean;
   glare?: boolean;
+  /** Draw wiggly dark crust cracks on top of each piece (must NOT split pieces). */
+  cracks?: boolean;
+  /** Height in board px of the darker front (side) face visible below each piece; not top area. */
+  sideFace?: number;
   noise?: number;
   cols?: number;
   rows?: number;
@@ -32,6 +36,10 @@ export interface SynthScene {
   boardH: number;
   /** Label of the true biggest piece. */
   biggest: number;
+  /** Board -> photo homography (row-major 3×3). */
+  boardToPhoto: number[];
+  /** One tap per piece (photo coords), at each piece's centroid: index k = label k + 1. */
+  taps: Pt[];
 }
 
 export function rng(seed: number) {
@@ -53,6 +61,7 @@ const BOARD_H = 480;
 const WOOD: [number, number, number] = [196, 150, 104];
 const BROWNIE: [number, number, number] = [74, 45, 31];
 const CREASE: [number, number, number] = [38, 22, 15];
+const SIDE: [number, number, number] = [40, 25, 17];
 
 function rotRect(cx: number, cy: number, w: number, h: number, ang: number, jitter: () => number): Pt[] {
   const c = Math.cos(ang), s = Math.sin(ang);
@@ -144,6 +153,45 @@ export function makeScene(opt: SynthOptions): SynthScene {
     const creaseMask = pool.add(cv.Mat.zeros(BOARD_H, BOARD_W, cv.CV_8UC1));
     for (const [a, b] of cuts) cv.line(creaseMask, new cv.Point(Math.round(a.x), Math.round(a.y)), new cv.Point(Math.round(b.x), Math.round(b.y)), new cv.Scalar(255), 2);
 
+    // Side faces: a band below each piece (toward the camera), drawn under the tops.
+    const sideMask = pool.add(cv.Mat.zeros(BOARD_H, BOARD_W, cv.CV_8UC1));
+    if (opt.sideFace) {
+      for (const p of polys) {
+        const [, , br, bl] = [...p];
+        const band = [bl, br, { x: br.x, y: br.y + opt.sideFace }, { x: bl.x, y: bl.y + opt.sideFace }];
+        const mv = pool.add(new cv.MatVector());
+        const m = ptsMat(band);
+        mv.push_back(m);
+        m.delete();
+        cv.fillPoly(sideMask, mv, new cv.Scalar(255));
+      }
+    }
+    // Crust cracks: random walks across part of each piece, thin and wiggly.
+    const crackMask = pool.add(cv.Mat.zeros(BOARD_H, BOARD_W, cv.CV_8UC1));
+    if (opt.cracks) {
+      for (const p of polys) {
+        const cx = p.reduce((a, q) => a + q.x, 0) / 4;
+        const cy = p.reduce((a, q) => a + q.y, 0) / 4;
+        const w = Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y);
+        const h = Math.hypot(p[3].x - p[0].x, p[3].y - p[0].y);
+        for (let k = 0; k < 2; k++) {
+          let x = cx + r.range(-0.3, 0.3) * w;
+          let y = cy + r.range(-0.3, 0.3) * h;
+          let ang = r.range(0, Math.PI * 2);
+          const steps = Math.round(r.range(0.35, 0.6) * Math.min(w, h) / 3);
+          for (let t = 0; t < steps; t++) {
+            ang += r.range(-0.9, 0.9);
+            const nx = x + 3 * Math.cos(ang);
+            const ny = y + 3 * Math.sin(ang);
+            cv.line(crackMask, new cv.Point(Math.round(x), Math.round(y)), new cv.Point(Math.round(nx), Math.round(ny)), new cv.Scalar(255), 2);
+            x = nx;
+            y = ny;
+          }
+        }
+      }
+    }
+    const sd = sideMask.data as Uint8Array;
+    const km = crackMask.data as Uint8Array;
     const ld = lab.data as Uint8Array;
     const cm = creaseMask.data as Uint8Array;
     const gtLabels = new Int32Array(BOARD_W * BOARD_H);
@@ -161,8 +209,11 @@ export function makeScene(opt: SynthOptions): SynthScene {
         } else if (ld[i]) {
           gtLabels[i] = ld[i];
           gtAreas[ld[i]]++;
-          col = BROWNIE;
-          n = r.gauss() * 7 + (r.next() < 0.02 ? 35 : 0); // texture + light crumbs
+          col = km[i] ? CREASE : BROWNIE;
+          n = km[i] ? r.gauss() * 4 : r.gauss() * 7 + (r.next() < 0.02 ? 35 : 0); // texture + light crumbs
+        } else if (sd[i]) {
+          col = SIDE;
+          n = r.gauss() * 2; // smooth cut face
         } else {
           col = WOOD;
           const grain = 0.08 * Math.sin(y * 0.18 + 2.5 * Math.sin(x * 0.012 + phase)) + 0.03 * Math.sin(y * 0.9);
@@ -186,8 +237,8 @@ export function makeScene(opt: SynthOptions): SynthScene {
     const PW = 1200, PH = 900;
     const bw = 820, bh = 615;
     const cx = PW / 2 + r.range(-40, 40), cy = PH / 2 + r.range(-30, 30);
-    const shrink = 1 - 0.38 * tilt; // far edge appears shorter
-    const squash = 1 - 0.3 * tilt; // and the board appears less tall
+    const shrink = Math.max(0.3, 1 - 0.38 * tilt); // far edge appears shorter
+    const squash = Math.max(0.45, 1 - 0.3 * tilt); // and the board appears less tall
     let quad: Pt[] = [
       { x: -bw / 2 * shrink, y: -bh / 2 * squash }, { x: bw / 2 * shrink, y: -bh / 2 * squash },
       { x: bw / 2, y: bh / 2 * squash }, { x: -bw / 2, y: bh / 2 * squash },
@@ -233,7 +284,25 @@ export function makeScene(opt: SynthOptions): SynthScene {
     let biggest = 1;
     for (let k = 2; k < gtAreas.length; k++) if (gtAreas[k] > gtAreas[biggest]) biggest = k;
 
+    const Hb = Array.from(M.data64F as Float64Array);
+    const taps: Pt[] = [];
+    for (let k = 1; k < gtAreas.length; k++) {
+      let sx = 0, sy = 0, n = 0;
+      for (let i = 0; i < gtLabels.length; i++) {
+        if (gtLabels[i] === k) {
+          sx += i % BOARD_W;
+          sy += Math.floor(i / BOARD_W);
+          n++;
+        }
+      }
+      const bx = sx / n, by = sy / n;
+      const w = Hb[6] * bx + Hb[7] * by + Hb[8];
+      taps.push({ x: (Hb[0] * bx + Hb[1] * by + Hb[2]) / w, y: (Hb[3] * bx + Hb[4] * by + Hb[5]) / w });
+    }
+
     return {
+      boardToPhoto: Hb,
+      taps,
       photo: { data: new Uint8ClampedArray(photoMat.data), width: PW, height: PH },
       corners: quad,
       gtLabels,
@@ -269,14 +338,15 @@ export interface Evaluation {
 export function evaluate(
   scene: SynthScene,
   pieces: { id: number; area: number; centroid: Pt }[],
-  warpW: number,
-  warpH: number,
+  inner: { x0: number; y0: number; x1: number; y1: number },
 ): Evaluation {
+  const warpW = inner.x1 - inner.x0 + 1;
+  const warpH = inner.y1 - inner.y0 + 1;
   const matches = new Map<number, number>();
   const used = new Map<number, number>();
   for (const p of pieces) {
-    const bx = Math.round((p.centroid.x / (warpW - 1)) * (scene.boardW - 1));
-    const by = Math.round((p.centroid.y / (warpH - 1)) * (scene.boardH - 1));
+    const bx = Math.round(((p.centroid.x - inner.x0) / (warpW - 1)) * (scene.boardW - 1));
+    const by = Math.round(((p.centroid.y - inner.y0) / (warpH - 1)) * (scene.boardH - 1));
     let gt = 0;
     for (let r = 0; r <= 6 && !gt; r++) {
       for (let dy = -r; dy <= r && !gt; dy++) {

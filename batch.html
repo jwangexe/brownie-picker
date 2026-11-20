@@ -33,9 +33,9 @@
   <body>
     <h1>🍫 Batch results: <code>test-images/</code></h1>
     <p id="intro">
-      Runs the automatic pipeline on every image in <code>test-images/</code> (and <code>test-images/synthetic/</code>; make
-      those with <code>npm run synth</code>). Corners come from <code>NAME.corners.json</code> next to each photo, or from
-      auto-detection. Use “Edit corners” then “Save” to write the sidecar file.
+      Runs the tap-seeded pipeline on every image in <code>test-images/</code> that has a <code>NAME.taps.json</code>
+      (corners + one tap per brownie). Click a photo to add a tap / click a dot to remove it, then “Save taps” to
+      update the fixture the regression tests use. Synthetic scenes: <code>npm run synth</code>.
     </p>
     <div id="grid" class="grid"></div>
     <script type="module" src="/src/batch.ts"></script>
