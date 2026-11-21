@@ -6,7 +6,7 @@ import type { RGBAImage } from './pipeline/types';
 import { inRect } from './pipeline/warp';
 import { CornerEditor } from './ui/cornerEditor';
 import { loadOpenCV } from './ui/loadOpenCV';
-import { debugPanels, drawResult, facesOverlay, verdict } from './ui/render';
+import { debugPanels, drawResult, verdict } from './ui/render';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -29,7 +29,7 @@ const store = {
   },
 };
 
-let settings = store.get('bp.settings', { sensitivity: DEFAULT_SENSITIVITY });
+let settings = store.get('bp.settings', { sensitivity: DEFAULT_SENSITIVITY, faces: true });
 
 // ---------- app state ----------------------------------------------------------------------
 let photo: HTMLCanvasElement | null = null;
@@ -241,8 +241,8 @@ function renderResult() {
   resultCanvas.style.height = `${cssH}px`;
   resultCanvas.width = Math.round(cssW * dpr);
   resultCanvas.height = Math.round(cssH * dpr);
-  const faces = $<HTMLInputElement>('faces').checked && board.seeds.length ? facesOverlay(board, photo.width, photo.height) : null;
-  drawResult(resultCanvas, photo, board, { faces });
+  drawResult(resultCanvas, photo, board, { faces: settings.faces });
+  $('face-legend').hidden = !settings.faces || !board.pieces.length;
 
   const v = verdict(board.ranking);
   $('verdict-title').textContent = v.title;
@@ -314,7 +314,9 @@ $('dismiss').addEventListener('click', () => {
 function syncSliders() {
   $<HTMLInputElement>('sensitivity').value = String(settings.sensitivity);
   $('o-sensitivity').textContent = settings.sensitivity.toFixed(2);
+  $<HTMLInputElement>('faces').checked = settings.faces;
 }
+syncSliders();
 
 let rerunTimer = 0;
 $<HTMLInputElement>('sensitivity').addEventListener('input', (e) => {
@@ -328,7 +330,7 @@ $<HTMLInputElement>('sensitivity').addEventListener('input', (e) => {
   }, 250);
 });
 $('reset-params').addEventListener('click', async () => {
-  settings = { sensitivity: DEFAULT_SENSITIVITY };
+  settings = { sensitivity: DEFAULT_SENSITIVITY, faces: true };
   store.set('bp.settings', settings);
   syncSliders();
   await busy(resultCanvas.parentElement!, () => board?.setSensitivity(settings.sensitivity));
@@ -338,7 +340,11 @@ $('clear-pieces').addEventListener('click', () => {
   board?.clear();
   renderResult();
 });
-$<HTMLInputElement>('faces').addEventListener('change', renderResult);
+$<HTMLInputElement>('faces').addEventListener('change', (e) => {
+  settings = { ...settings, faces: (e.target as HTMLInputElement).checked };
+  store.set('bp.settings', settings);
+  renderResult();
+});
 $<HTMLInputElement>('debug').addEventListener('change', (e) => {
   $('debug-panel').hidden = !(e.target as HTMLInputElement).checked;
   if (!$('debug-panel').hidden) renderDebug();

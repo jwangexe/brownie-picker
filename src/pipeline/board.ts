@@ -1,3 +1,5 @@
+import { estimateCamera, type Camera } from './camera';
+import { fitBoxes, MIN_BOX_IOU, type BoxesResult } from './cuboid';
 import { cv, MatPool } from './cv';
 import { applyH, obliqueness } from './geometry';
 import { buildGapMap, dilateMask, elevationImage, type GapMap } from './gapmap';
@@ -26,6 +28,10 @@ export class Board {
   readonly lab: LabImage;
   readonly W: number;
   readonly H: number;
+  /** Camera pose relative to the board, from the corners (for the cuboid model). */
+  readonly camera: Camera;
+  /** Last cuboid fit: shared lift (camera foot + height ratio) and per-piece offsets. */
+  boxes: BoxesResult | null = null;
   /** Accepted seeds, warped coordinates. */
   seeds: Pt[] = [];
   /** Suggested seeds awaiting accept/delete, warped coordinates. */
@@ -52,6 +58,7 @@ export class Board {
     this.W = this.warp.warped.width;
     this.H = this.warp.warped.height;
     this.lab = toLab(this.warp.warped);
+    this.camera = estimateCamera(this.warp.Hinv, photo.width, photo.height, this.warp.inner);
     this.labels = new Int32Array(this.W * this.H);
     this.top = new Uint8Array(this.W * this.H);
   }
@@ -132,11 +139,34 @@ export class Board {
       } finally {
         pool.free();
       }
-      this.top = topFaces(this.lab, this.labels, this.W, this.H, darkLimit(model));
+      this.top = topFaces(this.lab, this.labels, this.W, this.H, darkLimit(model), model, this.pieceWidth());
     }
     this.pieces = piecesFromLabels(this.labels, this.top, this.W, this.H, this.seeds);
+    this.fitBoxes();
     this.ranking = rankPieces(this.pieces);
     this.lastMs = performance.now() - t0;
+  }
+
+  /**
+   * Fits a box to every piece and measures its footprint. Pixel areas are converted to the same
+   * (isotropic world) units so the two are comparable when a box can't be fitted.
+   */
+  private fitBoxes() {
+    const ay = this.camera.ay;
+    for (const p of this.pieces) {
+      p.pixelArea *= ay;
+      p.area = p.pixelArea;
+    }
+    if (!this.pieces.length) {
+      this.boxes = null;
+      return;
+    }
+    this.boxes = fitBoxes(this.labels, this.top, this.W, this.H, this.pieces.length, this.camera, this.pieceWidth(), this.warp.inner);
+    this.pieces.forEach((p, k) => {
+      const b = this.boxes!.boxes[k];
+      p.box = b;
+      if (b && b.iou >= MIN_BOX_IOU) p.area = b.area;
+    });
   }
 
   /** Colour-sampling radius around each tap: a fifth of a piece, so the model sees each piece's

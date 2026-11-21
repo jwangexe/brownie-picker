@@ -29,6 +29,14 @@ console.log(`${name}: ${board.seeds.length} taps -> ${r.pieces.length} pieces in
 for (const p of r.pieces) {
   console.log(`  #${p.rank} id${p.id} top=${p.area} mask=${p.maskArea} (${Math.round((100 * p.area) / Math.max(1, p.maskArea))}% top) ×median=${p.ratioToMedian.toFixed(2)} ${p.flag ?? ''}`);
 }
+const cam = board.camera;
+console.log(`  camera: C=(${cam.C.map((v) => v.toFixed(0)).join(', ')}) ay=${cam.ay.toFixed(3)} orthoErr=${cam.orthoErr.toFixed(3)} fallback=${cam.fallback}`);
+const L = board.boxes?.lift;
+if (L) console.log(`  lift: F=(${L.F.x.toFixed(0)}, ${L.F.y.toFixed(0)}) c=${L.c.toFixed(3)} height=${L.height.toFixed(1)}; inner=${JSON.stringify(board.warp.inner)} pw=${board.pieceWidth().toFixed(0)}`);
+for (const p of r.pieces) {
+  const b = p.box;
+  console.log(`  #${p.rank} id${p.id} area=${p.area.toFixed(0)} px=${p.pixelArea.toFixed(0)} box=${b ? `${b.w.toFixed(0)}x${b.d.toFixed(0)} iou=${b.iou.toFixed(2)} front=${b.front?.toFixed(0) ?? '-'}` : '-'}`);
+}
 console.log(`  suggest: ${board.suggestion!.seeds.length} proposals; gap segments kept ${board.gapMap().segments.length}; pieceWidth ${board.pieceWidth().toFixed(0)}`);
 
 // ---------------------------------------------------------------- drawing helpers
@@ -116,7 +124,7 @@ for (const p of r.pieces) {
   }
   const s = board.toPhoto(p.seed);
   dot(A, s, 5, [255, 0, 255, 255]);
-  const lbl = `#${p.rank} ${Math.round(p.pctOfMean)}%${p.flag ? (p.flag === 'two' ? ' x2?' : ' frag') : ''}`;
+  const lbl = `#${p.rank} ${Math.round(p.pctOfMean)}%${p.flag ? (p.flag === 'two' ? ' x2?' : p.flag === 'shape' ? ' shape?' : ' frag') : ''}`;
   text(A, lbl, Math.round(s.x) - 30, Math.round(s.y) - 10, 0.5, p.flag ? [255, 130, 130, 255] : [255, 255, 255, 255]);
 }
 const head =
@@ -130,6 +138,37 @@ const head =
         ? `No winner: ${r.flagged}/${r.pieces.length} flagged`
         : r.status;
 caption(A, `${name}${tag ? ' ' + tag : ''}: ${board.seeds.length} taps = ${r.pieces.length} pieces | ${head} | cyan=top face, red=side face`);
+
+// ---------------------------------------------------------------- panel A2: cuboid faces on the photo
+const FACE_COL: Record<string, number[]> = { top: [255, 200, 60, 255], front: [60, 140, 255, 255], side: [190, 80, 255, 255] };
+const boxLayer = pool.add(cv.Mat.zeros(PH, PW, cv.CV_8UC4));
+const ranked = [...r.pieces].filter((p) => p.box).sort((a, b) => a.box!.footprint[0].y - b.box!.footprint[0].y);
+const poly = (m: any, pts: Pt[], col: number[], fill: boolean, th = 1) => {
+  const mv = pool.add(new cv.MatVector());
+  const mat = cv.matFromArray(pts.length, 1, cv.CV_32SC2, pts.flatMap((q) => [Math.round(q.x), Math.round(q.y)]));
+  mv.push_back(mat);
+  mat.delete();
+  if (fill) cv.fillPoly(m, mv, new cv.Scalar(...col));
+  else cv.polylines(m, mv, true, new cv.Scalar(...col), th);
+};
+for (const p of ranked) {
+  for (const f of [...p.box!.faces].reverse()) poly(boxLayer, f.poly.map((q) => board.toPhoto(q)), FACE_COL[f.kind], true);
+}
+const A2d = new Uint8ClampedArray(photo.data);
+const bl = boxLayer.data as Uint8Array;
+for (let i = 0; i < PW * PH; i++) {
+  if (!bl[i * 4 + 3]) continue;
+  for (let c = 0; c < 3; c++) A2d[i * 4 + c] = A2d[i * 4 + c] * 0.55 + bl[i * 4 + c] * 0.45;
+}
+const A2 = fromRGBA(A2d, PW, PH);
+for (const p of ranked) {
+  for (const f of p.box!.faces) poly(A2, f.poly.map((q) => board.toPhoto(q)), [255, 255, 255, 255], false, 1);
+  const c = p.contour.map((q) => board.toPhoto(q));
+  if (c.length > 2) poly(A2, c, [255, 60, 60, 255], false, 1);
+  const sd = board.toPhoto(p.seed);
+  text(A2, `#${p.rank} ${p.box!.iou.toFixed(2)}`, Math.round(sd.x) - 25, Math.round(sd.y), 0.45, p.box!.iou < 0.6 ? [255, 120, 120, 255] : [255, 255, 255, 255]);
+}
+caption(A2, `cuboids: yellow=top, blue=front, purple=side; red=watershed mask; label = rank, silhouette IoU | front height ${board.boxes?.lift.height.toFixed(0)}`);
 
 // ---------------------------------------------------------------- warped panels
 const gm = board.gapMap();
@@ -163,6 +202,7 @@ const rows = [[B, C], [D, E], [F, G], [Hm]].map((row) => {
 });
 const v = pool.add(new cv.MatVector());
 v.push_back(fit(A, colW * 2));
+v.push_back(fit(A2, colW * 2));
 rows.forEach((m) => v.push_back(m));
 const all = pool.add(new cv.Mat());
 cv.vconcat(v, all);

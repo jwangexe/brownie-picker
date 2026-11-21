@@ -28,7 +28,7 @@ describe('geometry helpers', () => {
 });
 
 const piece = (id: number, area: number): Piece => ({
-  id, area, maskArea: area, centroid: { x: 0, y: 0 }, contour: [], seed: { x: 0, y: 0 },
+  id, area, pixelArea: area, box: null, maskArea: area, centroid: { x: 0, y: 0 }, contour: [], seed: { x: 0, y: 0 },
 });
 const pieces = (...areas: number[]) => areas.map((a, i) => piece(i + 1, a));
 

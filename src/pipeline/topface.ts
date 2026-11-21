@@ -1,22 +1,22 @@
 import { cv, MatPool } from './cv';
-import type { LabImage } from './markers';
+import type { ColourModel, LabImage } from './markers';
 
 /**
- * Splits each piece into top face and side face, so only the top is measured.
+ * Splits each piece into top face and side faces, so only the top is measured.
  *
- * Shot from an angle, a brownie shows its near vertical face below its top. That face is darker
- * (it faces away from overhead light) and smoother (a cut face, not cracked crust). Per piece:
- *   candidates = clearly darker than the top (L < 0.62 × top), or moderately darker and smooth
- *                (low local variance of L);
- *   side = candidate regions (after opening away thin cracks) that touch the piece's outline.
- * Very dark pixels (gaps, shadow) never count. If the "side" would be most of the piece, nothing
- * is removed: better to over-measure a little than to cut a piece in half.
+ * Shot from an angle, a brownie shows its cut faces next to its top. Cut faces are darker than the
+ * crust AND less yellow (the crust is glossy, caramelised sugar; the crumb inside is duller), which
+ * separates them even when they are only ~0.7× as bright as the top. So every piece pixel on the
+ * board is split into two clusters on (lightness relative to the brightest crust nearby, yellowness),
+ * seeded with the tapped crust colour and a duller, darker guess for the sides:
+ *   side = side-cluster regions (after opening away thin cracks) that touch the piece's outline.
+ * Very dark pixels (gaps, shadow) never count as top. If "side" would be nearly the whole piece,
+ * nothing is removed: better to over-measure a little than to lose the piece.
  *
  * @returns top: 1 where a piece pixel counts as top face (0 for side faces and background)
  */
-export function topFaces(lab: LabImage, labels: Int32Array, W: number, H: number, darkL = 0): Uint8Array {
+export function topFaces(lab: LabImage, labels: Int32Array, W: number, H: number, darkL = 0, model?: ColourModel, pw = 60): Uint8Array {
   const n = W * H;
-  const tex = localStd(lab.L, W, H, 7);
   const top = new Uint8Array(n);
   // Very dark pixels (gaps, deep shadow) the watershed handed to a piece are never top face.
   for (let i = 0; i < n; i++) if (labels[i] && lab.L[i] >= darkL) top[i] = 1;
@@ -33,21 +33,8 @@ export function topFaces(lab: LabImage, labels: Int32Array, W: number, H: number
 
   const lowAll = new Uint8Array(n);
   const pieceSize = new Map<number, number>();
-  for (const [label, px] of byLabel) {
-    if (px.length < 60) continue;
-    // Brightness of the top: upper part of the distribution (robust even if a side face is large).
-    const Ls = px.map((i) => lab.L[i]).sort((p, q) => p - q);
-    const topL = Ls[Math.floor(Ls.length * 0.7)];
-    const Ts = px.map((i) => tex[i]).sort((p, q) => p - q);
-    const medT = Ts[Ts.length >> 1];
-    // Side-face candidates: clearly dark (side faces are ≈0.4× the top in café light, a shaded patch
-    // of crust ≈0.7×), or moderately dark AND smooth (a clean cut face lacks crust texture).
-    for (const i of px) {
-      const L = lab.L[i];
-      if (L < 0.62 * topL || (L < 0.75 * topL && tex[i] < 0.6 * medT)) lowAll[i] = 255;
-    }
-    pieceSize.set(label, px.length);
-  }
+  for (const [label, px] of byLabel) pieceSize.set(label, px.length);
+  for (const i of splitSides(lab, labels, W, H, pw, darkL, model)) lowAll[i] = 255;
 
   // Side faces = dark/smooth regions touching the piece's outline (a side face is always at a piece
   // edge: the near face below the top, or a neighbour's face leaning into this piece's mask).
@@ -94,31 +81,68 @@ export function topFaces(lab: LabImage, labels: Int32Array, W: number, H: number
     a.push(...comp);
   }
   for (const [label, side] of sideByLabel) {
-    if (side.length > 0.6 * (pieceSize.get(label) ?? 0)) continue; // implausible: keep the piece whole
+    // Implausible only if almost nothing would be left: a piece whose mask is mostly side face is
+    // usually one that grabbed its neighbours' front faces (fixed later, in the cuboid fit).
+    if ((pieceSize.get(label) ?? 0) - side.length < 0.08 * (pieceSize.get(label) ?? 0)) continue;
     for (const i of side) top[i] = 0;
   }
   return openTop(top, W, H);
 }
 
-/** Local standard deviation of an 8-bit channel in a k×k window. */
-function localStd(L: Uint8Array, W: number, H: number, k: number): Float32Array {
+/**
+ * Two-cluster split of all piece pixels on (L, 2·b): crust vs cut face. Returns the indices of
+ * pixels in the side cluster, or none if the clusters aren't clearly apart (a top-down photo has
+ * no side faces to find).
+ */
+function splitSides(lab: LabImage, labels: Int32Array, W: number, H: number, pw: number, darkL: number, model?: ColourModel): number[] {
+  const idx: number[] = [];
+  for (let i = 0; i < labels.length; i++) if (labels[i] && lab.L[i] >= darkL) idx.push(i);
+  if (idx.length < 100) return [];
+  // Light varies across a display (one end in shadow): judge each pixel's lightness relative to
+  // the brightest crust around it (local max over ~1.5 piece widths, smoothed), not to the board.
+  const local = localReference(lab.L, labels, W, H, pw);
+  const refs = idx.map((i) => local[i]).sort((p, q) => p - q);
+  const ref = refs[refs.length >> 1] || 1;
+  const step = Math.max(1, Math.floor(idx.length / 40000));
+  const topL0 = model?.L ?? ref;
+  const topB0 = model?.b ?? 0;
+  let c1 = [topL0, 2 * topB0];
+  let c2 = [0.65 * topL0, 2 * (topB0 - 10)];
+  const feat = (i: number) => [(lab.L[i] * ref) / Math.max(1, local[i]), 2 * lab.b[i]];
+  const d2 = (f: number[], c: number[]) => (f[0] - c[0]) ** 2 + (f[1] - c[1]) ** 2;
+  for (let it = 0; it < 8; it++) {
+    const s1 = [0, 0, 0];
+    const s2 = [0, 0, 0];
+    for (let k = 0; k < idx.length; k += step) {
+      const f = feat(idx[k]);
+      const t = d2(f, c1) <= d2(f, c2) ? s1 : s2;
+      t[0] += f[0];
+      t[1] += f[1];
+      t[2]++;
+    }
+    if (!s1[2] || !s2[2]) return [];
+    c1 = [s1[0] / s1[2], s1[1] / s1[2]];
+    c2 = [s2[0] / s2[2], s2[1] / s2[2]];
+  }
+  // The side cluster must be clearly darker than the crust; otherwise there's nothing to split.
+  if (c2[0] > c1[0]) [c1, c2] = [c2, c1];
+  if (c1[0] - c2[0] < 18) return [];
+  return idx.filter((i) => d2(feat(i), c2) < d2(feat(i), c1));
+}
+
+/** Local lightness reference: max of the (blurred) piece pixels within ~1.5 piece widths, then
+ *  smoothed: tracks the lighting across the board without following any one piece's faces. */
+function localReference(L: Uint8Array, labels: Int32Array, W: number, H: number, pw: number): Float32Array {
   const pool = new MatPool();
   try {
-    const src = pool.add(cv.matFromArray(H, W, cv.CV_8UC1, L));
-    const f = pool.add(new cv.Mat());
-    src.convertTo(f, cv.CV_32F);
-    const sq = pool.add(new cv.Mat());
-    cv.multiply(f, f, sq);
-    const m = pool.add(new cv.Mat());
-    const m2 = pool.add(new cv.Mat());
-    const ks = new cv.Size(k, k);
-    cv.blur(f, m, ks);
-    cv.blur(sq, m2, ks);
-    const md = m.data32F as Float32Array;
-    const m2d = m2.data32F as Float32Array;
-    const out = new Float32Array(W * H);
-    for (let i = 0; i < out.length; i++) out[i] = Math.sqrt(Math.max(0, m2d[i] - md[i] * md[i]));
-    return out;
+    const m = pool.add(cv.matFromArray(H, W, cv.CV_8UC1, L));
+    cv.GaussianBlur(m, m, new cv.Size(5, 5), 0);
+    const d = m.data as Uint8Array;
+    for (let i = 0; i < d.length; i++) if (!labels[i]) d[i] = 0;
+    const k = Math.max(15, Math.round(1.5 * pw) | 1);
+    cv.dilate(m, m, pool.add(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(k, k))));
+    cv.blur(m, m, new cv.Size(k, k));
+    return Float32Array.from(m.data as Uint8Array);
   } finally {
     pool.free();
   }

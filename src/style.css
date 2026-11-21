@@ -387,6 +387,37 @@ body {
   pointer-events: none;
   white-space: nowrap;
 }
+.face-legend {
+  position: absolute;
+  top: 50px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  background: rgba(0, 0, 0, 0.6);
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.face-legend .sw {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  margin-left: 4px;
+}
+.face-legend .sw.top {
+  background: rgb(255, 200, 61);
+}
+.face-legend .sw.front {
+  background: rgb(70, 150, 255);
+}
+.face-legend .sw.side {
+  background: rgb(190, 90, 255);
+}
 .proposal-bar {
   position: absolute;
   left: 50%;

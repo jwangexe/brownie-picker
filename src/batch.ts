@@ -6,7 +6,7 @@ import type { Pt, RGBAImage } from './pipeline/types';
 import { inRect } from './pipeline/warp';
 import { CornerEditor } from './ui/cornerEditor';
 import { loadOpenCV } from './ui/loadOpenCV';
-import { debugPanels, drawResult, facesOverlay, flagText, verdict } from './ui/render';
+import { debugPanels, drawResult, flagText, verdict } from './ui/render';
 
 interface Fixture {
   corners: Pt[];
@@ -79,7 +79,7 @@ async function runOne(path: string, url: string) {
     const facesC = document.createElement('canvas');
     facesC.width = photo.width;
     facesC.height = photo.height;
-    drawResult(facesC, photo, board, { faces: board.seeds.length ? facesOverlay(board, photo.width, photo.height) : null });
+    drawResult(facesC, photo, board, { faces: true });
     out.onclick = (e) => {
       const r = out.getBoundingClientRect();
       board.tapAt({ x: ((e.clientX - r.left) / r.width) * photo.width, y: ((e.clientY - r.top) / r.height) * photo.height });
@@ -87,12 +87,12 @@ async function runOne(path: string, url: string) {
     };
     const v = verdict(board.ranking);
     const rows = board.ranking.pieces
-      .map((p) => `<tr><td>#${p.rank}</td><td>${p.area}</td><td>${Math.round((100 * p.area) / Math.max(1, p.maskArea))}%</td><td>${p.ratioToMedian.toFixed(2)}×</td><td>${flagText(p)}</td></tr>`)
+      .map((p) => `<tr><td>#${p.rank}</td><td>${Math.round(p.area)}</td><td>${p.box ? `${p.box.w.toFixed(0)}×${p.box.d.toFixed(0)}` : '–'}</td><td>${p.box ? p.box.iou.toFixed(2) : '–'}</td><td>${p.ratioToMedian.toFixed(2)}×</td><td>${flagText(p)}</td></tr>`)
       .join('');
     const stats = document.createElement('div');
     stats.className = 'stats';
     stats.innerHTML = `<span class="win">${v.title}</span><br>${v.detail}<br>${board.seeds.length} taps = ${board.pieces.length} pieces · ${Math.round(board.lastMs)} ms · foreshortening ${board.foreshortening.toFixed(2)}${board.tooShallow ? ' <span class="bad">(too shallow)</span>' : ''}
-      <details><summary>Pieces</summary><table><tr><th>rank</th><th>top px</th><th>top/mask</th><th>× median</th><th></th></tr>${rows}</table></details>`;
+      <details><summary>Pieces</summary><table><tr><th>rank</th><th>top area</th><th>top w×d</th><th>box fit</th><th>× median</th><th></th></tr>${rows}</table></details>`;
     const btns = document.createElement('div');
     btns.className = 'btns';
     const save = button('Save taps', true);
@@ -108,7 +108,7 @@ async function runOne(path: string, url: string) {
     edit.onclick = () => editCorners(board.warp.corners, board.seeds.map((s) => board.toPhoto(s)));
     const imgs = document.createElement('div');
     imgs.className = 'imgs';
-    imgs.append(fig('top face (cyan) / side face (red)', facesC), ...debugPanels(board).map(([n, c]) => fig(n, c)));
+    imgs.append(fig('fitted boxes: top (gold) / front (blue) / side (purple)', facesC), ...debugPanels(board).map(([n, c]) => fig(n, c)));
     card.replaceChildren(card.firstElementChild!, out, stats, btns, imgs);
   };
 

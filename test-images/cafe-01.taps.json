@@ -100,10 +100,6 @@
     {
       "tap": 5,
       "reason": "Real geometry, not a segmentation error: this back-row piece leans forward on the front row, so its top is tilted toward the camera and genuinely covers ~2x the photo area of a flat piece. Correct output is the flag + \"Check #N\"."
-    },
-    {
-      "tap": 13,
-      "reason": "Open segmentation issue: this front piece's mask spills up into the dark underside of the leaning piece behind it (stacked pile). Flagged, so it is never crowned."
     }
   ]
 }

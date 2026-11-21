@@ -55,6 +55,7 @@
       <div class="stage">
         <canvas id="result-canvas"></canvas>
         <div id="counter" class="counter">0 brownies tapped</div>
+        <div id="face-legend" class="face-legend" hidden><i class="sw top"></i>top <i class="sw front"></i>front <i class="sw side"></i>side</div>
         <div id="shallow-warn" class="hint warn top" hidden>⚠ Shot too shallow (far edge much shorter than near edge): sizes are unreliable. Retake from higher up.</div>
         <div id="proposal-bar" class="proposal-bar" hidden>
           <span id="proposal-count"></span>
@@ -82,7 +83,7 @@
         <label>Cut-line sensitivity <output id="o-sensitivity"></output></label>
         <input id="sensitivity" type="range" min="0" max="1" step="0.05" />
         <p class="muted">Higher: fainter and shorter dark lines count as cuts between pieces. Lower: more crust cracks are ignored.</p>
-        <div class="row"><label for="faces">Show top face / side face</label><input id="faces" type="checkbox" /></div>
+        <div class="row"><label for="faces">Label faces (top / front / side)</label><input id="faces" type="checkbox" /></div>
         <div class="row"><label for="debug">Debug view</label><input id="debug" type="checkbox" /></div>
         <hr />
         <div class="btn-row">

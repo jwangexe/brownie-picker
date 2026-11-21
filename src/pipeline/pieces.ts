@@ -31,12 +31,14 @@ export function piecesFromLabels(labels: Int32Array, top: Uint8Array | null, W: 
     const s = stats.get(id);
     if (!s) {
       // Keep the count honest even if a seed's region vanished (it can't with watershed, but be safe).
-      pieces.push({ id, area: 0, maskArea: 0, centroid: seed, contour: [], seed });
+      pieces.push({ id, area: 0, pixelArea: 0, box: null, maskArea: 0, centroid: seed, contour: [], seed });
       return;
     }
     pieces.push({
       id,
       area: s.nTop,
+      pixelArea: s.nTop,
+      box: null,
       maskArea: s.n,
       centroid: { x: s.sx / s.n, y: s.sy / s.n },
       contour: outerContour(labels, W, id, s),

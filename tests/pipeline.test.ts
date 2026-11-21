@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { initCV } from './cvnode';
 import { Board } from '../src/pipeline/board';
+import { fitBoxes } from '../src/pipeline/cuboid';
 import { evaluate, makeScene, type SynthOptions } from '../src/synth/synth';
 
 beforeAll(async () => {
@@ -77,9 +78,49 @@ describe('tap-seeded watershed', () => {
       const { scene, board, ev } = tapped({ seed, tilt: 0.5, sideFace: 14, winnerMargin: 0.1 });
       expectGood(scene, board, ev);
       // The masks do include the side faces; the measured area doesn't.
-      const side = board.pieces.reduce((s, p) => s + p.maskArea - p.area, 0);
+      const side = board.pieces.reduce((s, p) => s + p.maskArea * board.camera.ay - p.area, 0);
       expect(side).toBeGreaterThan(0);
     }
+  });
+
+  it('labels faces: every piece gets a box with a top and a front face of the shared height', () => {
+    for (const seed of [73, 74]) {
+      const { board } = tapped({ seed, tilt: 0.5, sideFace: 14, winnerMargin: 0.1 });
+      const lift = board.boxes!.lift;
+      // 14 board px of front face; the top-down view is ~1.25× the board's scale.
+      expect(lift.height).toBeGreaterThan(8);
+      expect(lift.height).toBeLessThan(30);
+      for (const p of board.pieces) {
+        expect(p.box, `piece ${p.id}`).not.toBeNull();
+        expect(p.box!.iou, `piece ${p.id}`).toBeGreaterThan(0.85);
+        const kinds = p.box!.faces.map((f) => f.kind);
+        expect(kinds[0]).toBe('top');
+        expect(kinds).toContain('front');
+      }
+    }
+  });
+
+  it('holes and dark cracks inside a piece are filled in (a box has no holes)', () => {
+    const { board } = tapped({ seed: 56, tilt: 0.4, cracks: true, winnerMargin: 0.1 });
+    const { W, H } = board;
+    const before = fitBoxes(board.labels, board.top, W, H, board.pieces.length, board.camera, board.pieceWidth(), board.warp.inner);
+    // Punch a deep dark hole the segmentation lost (background) into the middle of piece 1.
+    const labels = board.labels.slice();
+    const c = board.pieces[0].centroid;
+    let punched = 0;
+    for (let y = Math.round(c.y) - 7; y <= Math.round(c.y) + 7; y++) {
+      for (let x = Math.round(c.x) - 7; x <= Math.round(c.x) + 7; x++) {
+        if (labels[y * W + x] === 1) {
+          labels[y * W + x] = 0;
+          punched++;
+        }
+      }
+    }
+    expect(punched).toBeGreaterThan(150);
+    const after = fitBoxes(labels, board.top, W, H, board.pieces.length, board.camera, board.pieceWidth(), board.warp.inner);
+    const a0 = before.boxes[0]!.area;
+    const a1 = after.boxes[0]!.area;
+    expect(Math.abs(a1 / a0 - 1)).toBeLessThan(0.01);
   });
 });
 

@@ -1,3 +1,5 @@
+import type { BoxFit } from './cuboid';
+
 export interface Pt {
   x: number;
   y: number;
@@ -13,8 +15,13 @@ export interface RGBAImage {
 export interface Piece {
   /** Label value in the label map (= seed index + 1). */
   id: number;
-  /** Measured area: top-face pixels in the warped (top-down) view. */
+  /** Measured area, world units²: the fitted box's footprint, or (when no box fits) the top-face
+   *  pixel area. */
   area: number;
+  /** Top-face pixel area, world units² (warped px² × ay). */
+  pixelArea: number;
+  /** Cuboid fit (null if the piece is too small to fit). */
+  box: BoxFit | null;
   /** Whole mask, top + side face. */
   maskArea: number;
   centroid: Pt;
@@ -24,8 +31,9 @@ export interface Piece {
   seed: Pt;
 }
 
-/** 'two' = > 1.8× median (might be two pieces); 'fragment' = < 0.4× median. */
-export type PieceFlag = 'two' | 'fragment' | null;
+/** 'two' = > 1.8× median (might be two pieces); 'fragment' = < 0.4× median; 'shape' = no box fits
+ *  its pixels (leaning, broken, or badly segmented), so its size is a guess. */
+export type PieceFlag = 'two' | 'fragment' | 'shape' | null;
 
 export interface RankedPiece extends Piece {
   /** 1 = biggest. */

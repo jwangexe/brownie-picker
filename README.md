@@ -34,21 +34,39 @@ Everything runs in the browser (OpenCV.js compiled to WebAssembly). No server, n
      merges neighbours on a region adjacency graph when the shared boundary has no cut line, the union
      is more rectangular than the parts, or both parts are fragment-sized. It works best after one tap
      (so it knows what a brownie looks like here).
-4. **Top faces only**: shot at an angle, the dark vertical face of each brownie is visible. Within
-   each mask, regions touching the outline that are clearly darker than the top (or moderately darker
-   *and* smoother) are side faces and are excluded; only the top is measured. *Settings → Show top
-   face / side face* tints top cyan and side red on the photo.
+4. **Each brownie is a box (cuboid model)**. Measuring the outline of a piece's pixels is wrong
+   for a 3D object: shot at an angle it includes the side faces, loses the bits in dark cracks, and
+   grows when the segmentation leaks. So:
+   - **Top vs side faces**: cut faces are darker *and* less yellow than the glossy crust. All piece
+     pixels are split into two clusters on (lightness relative to the brightest crust nearby,
+     yellowness); dark regions at a piece's edge are side faces, thin dark cracks stay top.
+   - **Top face = rectangle**: each piece's top is fitted with a rectangle (near the board's axes,
+     unless a piece is clearly turned). The measured area is that top **filled in**: everything
+     inside it counts (cracks, holes, even if the segmentation called them background), side faces
+     and neighbours never do, and crust poking out past the rectangle still counts.
+     Why the top and not the footprint: from the camera, the plane of the tops maps to the board by a
+     uniform scaling about the point under the camera, so for pieces of one tray (same height) every
+     top is scaled by the same factor and the ratios are exact.
+   - **Height and faces**: a front face sits straight below its top, so side-face pixels are given to
+     the top rectangle above them (the watershed often hands a whole row of front faces to one
+     piece). The board's height is the upper quartile of the front-face lengths (fronts can be
+     hidden, never longer). Top + height complete the box, and its visible faces follow from
+     geometry: **top** (gold), **front** (blue) and a **side** (purple) when a piece is off to one
+     side of the camera. *Settings → Label faces* turns the tints on/off.
 5. **Verdict**: pieces are numbered by size (#1 = biggest).
    - ⚠ **×2?** = more than 1.8× the median piece ("might be two pieces: tap to split");
      ⚠ **bit?** = less than 0.4× ("likely a fragment"). The median ignores fragments, so half-hidden
-     pieces don't make every whole piece look "too big".
+     pieces don't make every whole piece look "too big". ⚠ **shape?** = its top doesn't fit a box
+     (leaning, broken, stacked): its size is a guess.
    - A flagged piece is **never crowned**. If #1 is flagged: "Check #1: might be two pieces".
-   - If more than 30% of pieces are flagged: no winner; "segmentation needs fixing".
+   - If more than 30% of pieces are ×2? / bit?: no winner; "segmentation needs fixing".
    - Otherwise: "#1 is ~18% bigger than #2", or a tie under 5%.
-   - Masks are drawn on the original photo (gold = winner), with the board outside the corners dimmed.
+   - The fitted boxes are drawn on the original photo (gold = winner), with the board outside the
+     corners dimmed.
 
 Code map: `src/pipeline/` is pure image processing (no DOM, also runs in Node tests): `board.ts`
 (the tap-seeded engine), `gapmap.ts`, `markers.ts` (background + watershed), `topface.ts`,
+`cuboid.ts` (box fit, filled top area, faces), `camera.ts` (pose from the corners),
 `suggest.ts` (proposals + RAG merge), `measure.ts` (ranking and flags);
 `src/ui/` holds the app widgets, `src/main.ts` is the app, `src/batch.ts` is the batch page, and
 `src/synth/` is the synthetic scene generator.
@@ -109,8 +127,9 @@ npm test
   - tap add / remove / outside / undo, and two taps on one piece split it;
   - Suggest proposes exactly one seed per piece (cracks don't cause splits) and adds nothing itself;
   - re-segmentation after a tap is < 1 s (≈ 0.2–0.3 s for a 1280 px photo).
-- `tests/cafe.test.ts`: **regression on a real photo**, `test-images/cafe-01.jpg` with your corners
-  and taps in `cafe-01.taps.json`: piece count = tap count, nothing outside the corner quad, no piece
+- `tests/cafe.test.ts`: **regression on real photos**, `test-images/cafe-01.jpg` and `cafe-02.jpg`
+  (a very oblique shot of thick pieces) with corners and taps in `NAME.taps.json`: boxes fit most
+  pieces and find their front faces, piece count = tap count, nothing outside the corner quad, no piece
   over 1.8× the median except cases listed (with a written reason) in `knownOversize`, and a flagged
   piece is never the winner.
 
@@ -134,7 +153,7 @@ map before/after, top-face mask, background marker, Suggest before/after merge) 
 | Problem | What you'll see | Fix |
 |---|---|---|
 | **Shallow angle** (brownie height) | Tops sit 2–3 cm above the board and side walls show; leaning or stacked pieces present their top *toward* the camera and look up to 2–3× bigger. Warned when the near edge is > 2.5× the far edge. | Shoot from high and straight down. Side faces are removed, but a tilted top can't be un-tilted from one photo. |
-| **Stacked / leaning pieces** (cafe-01's back row) | Hidden pieces show only a sliver (flagged *bit?*); a leaning piece is flagged *×2?*; a front piece's mask can spill into the dark underside of the piece leaning on it. | No 2-D method can measure hidden area. Compare only the pieces you can see whole; remove taps on slivers. |
+| **Stacked / leaning pieces** (cafe-01's back row, cafe-02's left pile) | Hidden pieces show only a sliver (flagged *bit?*); a leaning piece is flagged *×2?* or *shape?* (its top isn't a flat box). | No 2-D method can measure hidden area. Compare only the pieces you can see whole; remove taps on slivers. |
 | **Corners loose around the board** | Board/shelf wood that's the same colour as the brownies is inside the quad, and a piece's mask spreads into it. | Put corners tight around the brownies' board. |
 | **A straight crust crack** | Rare: a long, dark, straight crack is taken for a cut and part of a piece is lost. | *Settings → Cut-line sensitivity* lower; or check *Debug view → gap map AFTER*. |
 | **Touching pieces with no visible cut** | Two pieces measured as one (*×2?*). | Tap the other half: one tap = one piece. |

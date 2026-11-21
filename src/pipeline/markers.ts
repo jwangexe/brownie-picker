@@ -83,7 +83,7 @@ export function colourModel(lab: LabImage, W: number, seeds: Pt[], r = 5): Colou
  *  - everything outside the board quad,
  *  - washed-out pixels: paper / plate, light and much less coloured than the tapped brownies,
  *  - clearly-not-brownie colours: more than 6 robust spreads from the tapped brownies in Lab
- *    (a wooden board unlike the brownies, a plate rim...). Dark pixels never qualify this way:
+ *    (a wooden board unlike the brownies, a plate rim...). Darker pixels are judged on hue only:
  *    side faces and crust cracks are dark brownie, not background.
  *  - very dark pixels, either everywhere (`true`, Suggest's over-segmentation) or only inside a
  *    given zone (the accepted cut lines, for tapped pieces). Not everywhere for tapped pieces: a
@@ -112,7 +112,13 @@ export function backgroundMask(lab: LabImage, W: number, inner: Rect, model: Col
       if (darkIsBackground === true || (darkIsBackground && darkIsBackground[i])) out[i] = 1;
     } else if (L > paleL && Math.hypot(lab.a[i], lab.b[i]) < paleChroma) out[i] = 1;
     else if (L > 2 * dark) {
-      const d2 = ((L - model.L) / model.sL) ** 2 + ((lab.a[i] - model.a) / model.sa) ** 2 + ((lab.b[i] - model.b) / model.sb) ** 2;
+      // Side faces and shadowed crust are the same brown, just darker: a and b shrink roughly in
+      // proportion to L. So a darker pixel is compared on its colour scaled back up to the model's
+      // brightness, and its darkness alone never makes it background.
+      const darker = L < model.L;
+      const g = darker ? Math.min(3, model.L / L) : 1;
+      const dL = darker ? 0 : (L - model.L) / model.sL;
+      const d2 = dL ** 2 + ((lab.a[i] * g - model.a) / model.sa) ** 2 + ((lab.b[i] * g - model.b) / model.sb) ** 2;
       if (d2 > 36) out[i] = 1;
     }
   }

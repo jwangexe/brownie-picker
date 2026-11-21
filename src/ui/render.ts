@@ -1,5 +1,5 @@
 import type { Board } from '../pipeline/board';
-import { cv, MatPool } from '../pipeline/cv';
+import type { FaceKind } from '../pipeline/cuboid';
 import type { Pt, Ranking, RankedPiece, RGBAImage } from '../pipeline/types';
 
 export const GOLD = '#ffc83d';
@@ -7,19 +7,28 @@ export const SILVER = '#cfd8e3';
 const WARN = '#ff8a7a';
 
 export function flagText(p: RankedPiece): string {
-  return p.flag === 'two' ? '×2?' : p.flag === 'fragment' ? 'bit?' : '';
+  return p.flag === 'two' ? '×2?' : p.flag === 'fragment' ? 'bit?' : p.flag === 'shape' ? 'shape?' : '';
 }
 
+/** Face tints: top = crust (measured), front / side = cut faces (not measured). */
+export const FACE_COLOURS: Record<FaceKind, string> = {
+  top: 'rgba(255,200,61,0.34)',
+  front: 'rgba(70,150,255,0.42)',
+  side: 'rgba(190,90,255,0.42)',
+};
+
 /**
- * Draws the photo with every piece outlined (mapped back from the top-down view with the inverse
- * homography): the winner in gold, runner-up in silver, flagged pieces in red. Seeds are small
- * dots; suggested seeds are hollow "+" rings. Optionally tints top faces / side faces.
+ * Draws the photo with every piece's fitted box mapped back from the top-down view with the
+ * inverse homography: the top face (what is measured) outlined in gold for the winner, silver for
+ * the runner-up, red for flagged pieces. With `faces`, every box's faces are tinted: top, front
+ * and side. Pieces too small for a box fall back to their pixel outline. Seeds are small dots;
+ * suggested seeds are hollow "+" rings.
  */
 export function drawResult(
   canvas: HTMLCanvasElement,
   photo: CanvasImageSource & { width: number; height: number },
   board: Board,
-  opts: { faces?: HTMLCanvasElement | null } = {},
+  opts: { faces?: boolean } = {},
 ) {
   const ranking = board.ranking;
   const ctx = canvas.getContext('2d')!;
@@ -27,7 +36,6 @@ export function drawResult(
   const ui = Math.max(1, canvas.width / 700);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.drawImage(photo, 0, 0, canvas.width, canvas.height);
-  if (opts.faces) ctx.drawImage(opts.faces, 0, 0, canvas.width, canvas.height);
   ctx.setTransform(s, 0, 0, s, 0, 0);
   const px = (v: number) => (v * ui) / s;
 
@@ -48,23 +56,53 @@ export function drawResult(
   ctx.stroke();
   ctx.setLineDash([]);
 
-  const order = [...ranking.pieces].reverse();
-  for (const p of order) {
-    const pts = p.contour.map((q) => board.toPhoto(q));
-    if (pts.length < 3) continue;
+  const path = (pts: Pt[]) => {
     ctx.beginPath();
     pts.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
     ctx.closePath();
+  };
+  const photoPts = (pts: Pt[]) => pts.map((q) => board.toPhoto(q));
+
+  // Far pieces first, so nearer boxes paint over what they hide.
+  const depth = (p: RankedPiece) => (p.box ? Math.max(...p.box.outline.map((q) => q.y)) : p.centroid.y);
+  const byDepth = [...ranking.pieces].sort((a, b) => depth(a) - depth(b));
+  for (const p of byDepth) {
     const isW = p === ranking.winner;
     const isR = p === ranking.runnerUp;
     const isC = p === ranking.check;
-    if (!opts.faces) {
-      ctx.fillStyle = isW ? 'rgba(255,200,61,0.30)' : isR ? 'rgba(207,216,227,0.22)' : p.flag ? 'rgba(255,120,100,0.20)' : 'rgba(120,200,255,0.14)';
-      ctx.fill();
-    }
-    ctx.strokeStyle = isW ? GOLD : isR ? SILVER : p.flag ? WARN : 'rgba(150,215,255,0.9)';
-    ctx.lineWidth = px(isW || isC ? 5 : isR ? 3.5 : 2);
+    const stroke = isW ? GOLD : isR ? SILVER : p.flag ? WARN : 'rgba(150,215,255,0.9)';
+    const width = px(isW || isC ? 4 : isR ? 3 : 1.8);
     ctx.lineJoin = 'round';
+    if (!p.box) {
+      const pts = photoPts(p.contour);
+      if (pts.length < 3) continue;
+      path(pts);
+      ctx.fillStyle = p.flag ? 'rgba(255,120,100,0.20)' : 'rgba(120,200,255,0.14)';
+      ctx.fill();
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = width;
+      ctx.stroke();
+      continue;
+    }
+    // Side faces first (thin edges), then the top on top of them.
+    const [topFace, ...sides] = p.box.faces;
+    for (const f of sides) {
+      path(photoPts(f.poly));
+      if (opts.faces) {
+        ctx.fillStyle = FACE_COLOURS[f.kind];
+        ctx.fill();
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = px(1);
+      ctx.stroke();
+    }
+    path(photoPts(topFace.poly));
+    ctx.fillStyle = opts.faces
+      ? FACE_COLOURS.top
+      : isW ? 'rgba(255,200,61,0.30)' : isR ? 'rgba(207,216,227,0.22)' : p.flag ? 'rgba(255,120,100,0.20)' : 'rgba(120,200,255,0.14)';
+    ctx.fill();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = width;
     ctx.stroke();
   }
 
@@ -97,7 +135,7 @@ export function drawResult(
   }
 
   // Rank badges, placed just above each piece's seed.
-  for (const p of order) {
+  for (const p of [...ranking.pieces].reverse()) {
     const q = board.toPhoto(p.seed);
     const isW = p === ranking.winner;
     const isR = p === ranking.runnerUp;
@@ -142,11 +180,21 @@ export function verdict(r: Ranking): { title: string; detail: string; tone: 'ok'
     case 'broken':
       return {
         title: 'No winner: segmentation needs fixing',
-        detail: `${r.flagged} of ${n} pieces look wrong. On a “×2?” piece, tap its other half to split it; on a “bit?” piece, tap its dot to remove it.`,
+        detail: `${r.flagged} of ${n} pieces look wrong. On a “×2?” piece, tap its other half to split it; on a “bit?” piece, tap its dot to remove it. “shape?” pieces don’t fit a box (leaning or broken).`,
         tone: 'warn',
       };
     case 'check': {
       const c = r.check!;
+      if (c.flag === 'shape') {
+        return {
+          title: `Check #${c.rank}: not a clean block`,
+          detail: `#${c.rank} looks biggest, but its top doesn't fit a box (leaning, broken or stacked?), so its size is a guess.${flaggedNote}`,
+          tone: 'warn',
+        };
+      }
+      if (c.flag === 'fragment') {
+        return { title: `Check #${c.rank}`, detail: `#${c.rank} looks like a fragment.${flaggedNote}`, tone: 'warn' };
+      }
       return {
         title: `Check #${c.rank}: might be two pieces`,
         detail: `#${c.rank} is ${c.ratioToMedian.toFixed(1)}× the typical piece. If it’s really two, tap its other half to split it.${flaggedNote}`,
@@ -205,33 +253,6 @@ export function labelsToCanvas(labels: Int32Array, warped: RGBAImage, dots: Pt[]
   return c;
 }
 
-/**
- * Top face (cyan) / side face (red) tint, warped back onto the photo so it lines up with the
- * original picture. Returns a transparent canvas the size of the photo.
- */
-export function facesOverlay(board: Board, photoW: number, photoH: number): HTMLCanvasElement {
-  const { W, H } = board;
-  const ov = new Uint8ClampedArray(W * H * 4);
-  for (let i = 0; i < W * H; i++) {
-    if (!board.labels[i]) continue;
-    const t = board.top[i];
-    ov[i * 4] = t ? 60 : 255;
-    ov[i * 4 + 1] = t ? 220 : 60;
-    ov[i * 4 + 2] = t ? 255 : 60;
-    ov[i * 4 + 3] = t ? 95 : 150;
-  }
-  const pool = new MatPool();
-  try {
-    const src = pool.add(cv.matFromImageData({ data: ov, width: W, height: H }));
-    const Hinv = pool.add(cv.matFromArray(3, 3, cv.CV_64F, board.warp.Hinv));
-    const out = pool.add(new cv.Mat());
-    cv.warpPerspective(src, out, Hinv, new cv.Size(photoW, photoH), cv.INTER_NEAREST, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 0));
-    return imageToCanvas({ data: new Uint8ClampedArray(out.data), width: photoW, height: photoH });
-  } finally {
-    pool.free();
-  }
-}
-
 /** The debug panels shared by the app and the batch page. */
 export function debugPanels(board: Board): [string, HTMLCanvasElement][] {
   const { W, H } = board;
@@ -242,7 +263,7 @@ export function debugPanels(board: Board): [string, HTMLCanvasElement][] {
     ['pieces (top-down; margin = outside the corners)', labelsToCanvas(board.labels, board.warp.warped, board.seeds)],
     ['gap map BEFORE filtering: cuts + cracks', grayToCanvas(gm.raw, W, H)],
     [`gap map AFTER: ${gm.segments.length} straight cut segments kept`, grayToCanvas(gm.gap, W, H)],
-    ['measured: top face (white) vs side face (grey)', grayToCanvas(topVis, W, H)],
+    ['top-face pixels (white) vs side-face pixels (grey); boxes are fitted to the white', grayToCanvas(topVis, W, H)],
   ];
   if (board.background) items.push(['background marker (outside + dark cuts + pale)', grayToCanvas(board.background.map((v) => v * 255), W, H)]);
   if (board.suggestion) {
